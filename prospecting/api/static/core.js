@@ -93,6 +93,7 @@ export const I = {
   copy: svg('<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/>'),
   refresh: svg('<path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7"/>'),
   plus: svg('<path d="M12 5v14M5 12h14"/>'),
+  spark: svg('<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 16l.8 2.2L22 19l-2.2.8L19 22l-.8-2.2L16 19l2.2-.8z"/>'),
 };
 export const small = (icon, px = 13) => icon.replace("<svg", `<svg width="${px}" height="${px}" style="vertical-align:-2px;flex:none"`);
 
@@ -168,3 +169,63 @@ export const store = {
   get(k, d) { try { const v = localStorage.getItem("vp:" + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem("vp:" + k, JSON.stringify(v)); } catch {} },
 };
+
+// --- write with AI ---------------------------------------------------------------------
+// A prompt bar under a subject + body pair. The AI rewrites what is there (or writes a new
+// draft); every change can be undone, and the text stays yours to edit.
+const AI_CHIPS = ["Plus court", "Plus chaleureux", "Plus direct", "Plus formel", "Termine par une question simple", "Corrige le français"];
+export function aiBar(ai) {
+  if (!ai?.current) return `<div class="ai-bar off small muted">${small(I.spark, 14)} Write from a prompt: set up an AI in <a href="#settings" data-close>Settings</a> (free options there).</div>`;
+  const p = ai.providers.find((x) => x.key === ai.current);
+  return `<div class="ai-bar" role="group" aria-label="Write with AI">
+    <div class="ai-in"><span class="ai-ic" aria-hidden="true">${small(I.spark, 15)}</span><input class="ai-prompt" placeholder="Tell the AI what to write or change, e.g. plus court, parle de leurs photos d'intérieur" autocomplete="off" aria-label="Prompt for the AI">
+      <button class="btn sm primary" type="button" data-ai="edit" title="Change the email above as you say (Enter)">Rewrite</button><button class="btn sm" type="button" data-ai="new" title="Write a fresh draft from your prompt">New draft</button></div>
+    <div class="ai-chips">${AI_CHIPS.map((c) => `<button type="button" class="chip" data-chip="${esc(c)}">${esc(c)}</button>`).join("")}
+      <span class="grow"></span><button type="button" class="chip" data-undo hidden>↶ Undo</button><span class="small dim ai-st" title="${esc(p.label)} · ${esc(p.model)}">${esc(p.label)}</span></div></div>`;
+}
+export function wireAiBar(bar, { subject, body, extra }) {
+  if (!bar || bar.classList.contains("off")) return;
+  const input = $(".ai-prompt", bar), st = $(".ai-st", bar), undoB = $("[data-undo]", bar);
+  const history = [];
+  const label = st.textContent;
+  const run = async (mode, instruction, btn) => {
+    if (bar.dataset.busy) return;
+    if (mode === "edit" && !body.value.trim()) mode = "new";
+    bar.dataset.busy = "1";
+    bar.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    const t0 = Date.now();
+    const tick = setInterval(() => (st.textContent = `Writing… ${Math.round((Date.now() - t0) / 1000)} s`), 500);
+    try {
+      const r = await api("/api/ai/write", { method: "POST", body: { ...extra(), mode, instruction, subject: subject.value, body: body.value } });
+      history.push({ s: subject.value, b: body.value });
+      if (r.subject) subject.value = r.subject;
+      body.value = r.body;
+      body.dispatchEvent(new Event("input", { bubbles: true }));
+      input.value = "";
+      undoB.hidden = false;
+      st.textContent = `${label} · ${r.seconds} s`;
+    } catch (e) { st.textContent = label; fail(e); } finally {
+      clearInterval(tick);
+      delete bar.dataset.busy;
+      bar.querySelectorAll("button").forEach((b) => (b.disabled = false));
+    }
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    e.stopPropagation(); // Ctrl+Enter here rewrites; it must not send the email
+    run("edit", input.value);
+  });
+  bar.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    e.stopPropagation();
+    if (b.dataset.ai) run(b.dataset.ai, input.value);
+    else if (b.dataset.chip) run("edit", b.dataset.chip);
+    else if (b.dataset.undo !== undefined) {
+      const last = history.pop();
+      if (last) { subject.value = last.s; body.value = last.b; body.dispatchEvent(new Event("input", { bubbles: true })); }
+      undoB.hidden = !history.length;
+    }
+  });
+}

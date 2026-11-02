@@ -1,8 +1,8 @@
 // The lead file (drawer), the email composer, and the review dialog for written emails.
 import {
-  $, api, at, av, busy, changed, closeModal, confetti, esc, fail, host, I, KIND, leanTxt,
+  $, aiBar, api, at, av, busy, changed, closeModal, confetti, esc, fail, host, I, KIND, leanTxt,
   lightbox, openModal, pill, safeUrl, small, SMALL_NEW, STAGES, STATUS, STEP, store, telHref,
-  toast, toLocalInput, fromLocalInput, tomorrowAt, when,
+  toast, toLocalInput, fromLocalInput, tomorrowAt, when, wireAiBar,
 } from "./core.js";
 
 export const drawer = { lead: null };
@@ -225,9 +225,12 @@ export function leadKey(e) {
 const MODE = { first: "First email", followup: "Follow-up", reply: "Reply to their message" };
 
 export async function openComposer(leadId, templateId = null) {
-  let c;
+  let c, ai;
   try {
-    c = await api(`/api/compose?lead_id=${leadId}${templateId ? `&template_id=${templateId}` : ""}`);
+    [c, ai] = await Promise.all([
+      api(`/api/compose?lead_id=${leadId}${templateId ? `&template_id=${templateId}` : ""}`),
+      api("/api/ai").catch(() => null),
+    ]);
   } catch (e) { return fail(e); }
   const l = c.lead, mb = c.mailbox;
   const canSend = mb.configured;
@@ -247,6 +250,7 @@ export async function openComposer(leadId, templateId = null) {
       <div class="field"><span class="k">From</span><span>${esc(mb.sender || "your mailbox (not connected yet)")}</span></div>
       <div class="field"><span class="k">Subject</span><input id="cp-subject" value="${esc(c.subject)}" aria-label="Subject"></div>
       <textarea class="input mailbody" id="cp-body" aria-label="Message" lang="fr" autofocus>${esc(c.body)}</textarea>
+      ${aiBar(ai)}
       <div class="optout">--\n${esc(c.footer)}</div>
     </div>
     <div class="cp-r">
@@ -271,6 +275,10 @@ export async function openComposer(leadId, templateId = null) {
     in_reply_to: c.in_reply_to, step: c.step, followups: sheet.querySelector("#cp-fu")?.checked ?? false, when: whenTo,
     experiment_id: c.test?.in_test ? c.test.id : null,
     edited: sheet.querySelector("#cp-subject").value !== c.subject || sheet.querySelector("#cp-body").value !== c.body,
+  });
+  wireAiBar(sheet.querySelector(".ai-bar"), {
+    subject: sheet.querySelector("#cp-subject"), body: sheet.querySelector("#cp-body"),
+    extra: () => ({ lead_id: l.id, step: c.step }),
   });
   sheet.onclick = async (e) => {
     const t = e.target.closest("button, a");

@@ -1,8 +1,8 @@
 // The views. Each one renders into the canvas and may handle its own keys.
 import {
-  $, $$, api, at, av, busy, changed, closeModal, confetti, dayName, esc, fail, firstName, I,
+  $, $$, aiBar, api, at, av, busy, changed, closeModal, confetti, dayName, esc, fail, firstName, I,
   KINDS_PL, leanCol, leanTxt, openModal, pill, ring, scoreCls, small, SMALL_NEW, STAGES, STATUS,
-  STEP, store, telHref, toast, toLocalInput, fromLocalInput, tomorrowAt, when,
+  STEP, store, telHref, toast, toLocalInput, fromLocalInput, tomorrowAt, when, wireAiBar,
 } from "./core.js";
 import { callLead, openComposer, openLead, openReview } from "./lead.js";
 
@@ -496,7 +496,8 @@ export const campaigns = {
   },
   // x: the template to edit (null for a new one). copy: a template to start a new one from.
   // onSaved: called with the saved template instead of re-rendering Campaigns.
-  editTpl(x, { copy = null, segment = null, step = null, onSaved = null } = {}) {
+  async editTpl(x, { copy = null, segment = null, step = null, onSaved = null } = {}) {
+    const ai = await api("/api/ai").catch(() => null);
     const v = x || (copy ? { ...copy, name: `${copy.name} (new version)`, archived: false }
       : { name: "", segment: segment || "any", step: step ?? 0, subject: "", body: "Bonjour {prenom},\n\n\n\n{signature}", attach_photo: true, archived: false });
     const sheet = openModal(`<div class="sheet-h"><h2>${x ? "Edit template" : "New template"}</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
@@ -506,10 +507,15 @@ export const campaigns = {
         <label>Used as<select class="select" name="step">${[[0, "First email"], [1, "Follow-up 1"], [2, "Follow-up 2"], [-1, "Reply"]].map(([s, t]) => `<option value="${s}" ${s === v.step ? "selected" : ""}>${t}</option>`).join("")}</select></label>
         <label class="full">Subject<input class="input" name="subject" value="${esc(v.subject)}" required></label>
         <label class="full">Message<textarea class="input mailbody" name="body" lang="fr" required>${esc(v.body)}</textarea></label>
+        <div class="full">${aiBar(ai)}</div>
         <label class="check"><input type="checkbox" class="chk" name="attach_photo" ${v.attach_photo ? "checked" : ""}> Attach their marked photo</label>
         <label class="check"><input type="checkbox" class="chk" name="archived" ${v.archived ? "checked" : ""}> Archived (not offered)</label></div>
         <p class="small dim" style="margin:0">Placeholders: {prenom} first name (left out when unknown), {agence} business name, {ville} town, {lean} measured lean, {n} photos measured, {site} website, {signature} your signature. Follow-ups keep the first email's subject.</p>
         <div class="row">${x ? `<button class="btn" type="button" data-save-copy title="Keeps this one as it is">Save as a new template</button>` : ""}<span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`);
+    const tf = sheet.querySelector("form");
+    wireAiBar(sheet.querySelector(".ai-bar"), {
+      subject: tf.subject, body: tf.body, extra: () => ({ segment: tf.segment.value, step: +tf.step.value }),
+    });
     const save = async (f, asNew, btn) => {
       const body = { name: f.name.value, segment: f.segment.value, step: +f.step.value, subject: f.subject.value, body: f.body.value, attach_photo: f.attach_photo.checked, archived: f.archived.checked };
       if (asNew && body.name === x.name) body.name = `${x.name} (new version)`;
@@ -713,7 +719,7 @@ export const insights = {
 // --- Settings ----------------------------------------------------------------------------
 export const settingsView = {
   async render() {
-    const [s, t] = await Promise.all([api("/api/settings"), api("/api/templates")]);
+    const [s, t, ai] = await Promise.all([api("/api/settings"), api("/api/templates"), api("/api/ai")]);
     const mb = s.mailbox, fu = s.followups;
     const theme = store.get("theme", "");
     const fuTpls = t.items.filter((x) => x.step > 0 && !x.archived);
@@ -741,6 +747,18 @@ PROSPECT_IMAP_HOST=imap.gmail.com
 PROSPECT_MAIL_FROM_NAME=Yacine · Veralume
 PROSPECT_DAILY_SEND_CAP=30</pre>
           <p class="small muted" style="margin:0">The inbox is only read, never changed. Add <span class="mono">PROSPECT_MAIL_DRY_RUN=true</span> to try everything without sending.</p></section>
+        <section class="card camp"><h3>Writing with AI</h3>
+          <p class="small muted" style="margin:0">Type what you want in the composer or the template editor, and the AI writes or rewrites the email. It only gets what the app knows about the lead, and is told not to invent anything. You always review before sending.</p>
+          <div class="ab-pick">${ai.providers.map((p) => `<label class="ab-opt" style="${p.configured ? "" : "opacity:.65;cursor:default"}"><input type="radio" name="ai-provider" value="${p.key}" ${p.key === ai.current ? "checked" : ""} ${p.configured ? "" : "disabled"}>
+            <div><b>${esc(p.label)}</b> <span class="tag">${esc(p.cost)}</span><div class="small muted">${p.configured ? `Ready · ${esc(p.model)}` : `Add <span class="mono">${esc(p.env)}=…</span> to .env`}</div></div></label>`).join("")}</div>
+          <details class="ab-read"><summary class="small">How to set one up</summary><ul class="small muted" style="padding-left:18px;display:grid;gap:6px">
+            <li><b>Gemini</b> (free): get a key at aistudio.google.com, then <span class="mono">PROSPECT_GEMINI_API_KEY=…</span>. Lead details go to Google.</li>
+            <li><b>Mistral</b> (free tier): key at console.mistral.ai, then <span class="mono">PROSPECT_MISTRAL_API_KEY=…</span>. Lead details go to Mistral (France).</li>
+            <li><b>Ollama</b> (free, stays on this computer): install it, run <span class="mono">ollama pull qwen2.5:3b</span>, then <span class="mono">PROSPECT_OLLAMA_URL=http://localhost:11434</span>. Slower on this machine.</li>
+            <li><b>Claude</b> (paid): key at console.anthropic.com, then <span class="mono">PROSPECT_ANTHROPIC_API_KEY=…</span>. Uses ${esc(ai.providers.find((p) => p.key === "claude").model)}; set <span class="mono">PROSPECT_AI_MODEL_CLAUDE=claude-haiku-5-5</span> to pay less.</li>
+            <li>Restart <span class="mono">prospect serve</span> after editing .env.</li></ul></details>
+          <form class="stack" id="ai-form"><label>What you offer (the AI builds every email on this)<textarea class="input" name="brief" rows="5" lang="fr">${esc(ai.brief)}</textarea></label>
+            <div class="row"><span class="grow"></span><button class="btn primary">Save</button></div></form></section>
         <section class="card camp"><h3>Look</h3><div class="seg" role="group" aria-label="Theme">${[["", "System"], ["light", "Light"], ["dark", "Dark"]].map(([v, l]) => `<button data-theme-set="${v}" aria-pressed="${theme === v}">${l}</button>`).join("")}</div></section>
       </div></div>`;
     $("#set-form").onsubmit = async (e) => {
@@ -752,6 +770,15 @@ PROSPECT_DAILY_SEND_CAP=30</pre>
         followups: fu.map((_, i) => ({ days: +f[`fu_days_${i}`].value, template: f[`fu_tpl_${i}`].value })),
       };
       await busy(f.querySelector(".primary"), async () => { await api("/api/settings", { method: "PUT", body }); store.set("segment", body.segment); toast("Saved"); });
+    };
+    $("#ai-form").onsubmit = async (e) => {
+      e.preventDefault();
+      const f = e.target, provider = C().querySelector("[name=ai-provider]:checked")?.value;
+      await busy(f.querySelector(".primary"), async () => { await api("/api/ai", { method: "PUT", body: { brief: f.brief.value, ...(provider ? { provider } : {}) } }); toast("Saved"); });
+    };
+    C().onchange = async (e) => {
+      if (e.target.name !== "ai-provider") return;
+      try { await api("/api/ai", { method: "PUT", body: { provider: e.target.value } }); toast("AI switched"); } catch (err) { fail(err); }
     };
     C().onclick = async (e) => {
       const b = e.target.closest("button");

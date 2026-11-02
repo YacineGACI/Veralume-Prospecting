@@ -9,7 +9,9 @@ os.environ["PROSPECT_DATA_DIR"] = _TMP
 os.environ["PROSPECT_MAIL_DRY_RUN"] = "true"
 os.environ["PROSPECT_RUN_WORKER"] = "false"
 os.environ["PROSPECT_MAIL_FROM"] = "moi@veralume.test"
-for k in ("PROSPECT_SMTP_HOST", "PROSPECT_SMTP_USER", "PROSPECT_SMTP_PASSWORD", "PROSPECT_IMAP_HOST"):
+for k in ("PROSPECT_SMTP_HOST", "PROSPECT_SMTP_USER", "PROSPECT_SMTP_PASSWORD", "PROSPECT_IMAP_HOST",
+          "PROSPECT_GEMINI_API_KEY", "PROSPECT_MISTRAL_API_KEY", "PROSPECT_ANTHROPIC_API_KEY",
+          "PROSPECT_OLLAMA_URL", "ANTHROPIC_API_KEY"):
     os.environ.pop(k, None)
 
 import pytest  # noqa: E402

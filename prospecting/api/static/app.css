@@ -435,3 +435,17 @@ pre.env{font:12.5px var(--mono);background:var(--bg);border:1px solid var(--line
 }
 .sheet-b{grid-template-columns:minmax(0,1fr)}
 .ab-pick,.ab-opt,.ab-opt > div{min-width:0}
+
+/* Write with AI */
+.ai-bar{display:grid;gap:8px;padding:10px;border:1px solid var(--line2);border-radius:12px;background:linear-gradient(180deg,var(--mint2),var(--raise))}
+.ai-bar.off{display:block;background:var(--bg);border-style:dashed}
+.ai-bar.off a{color:var(--ink);font-weight:600}
+.ai-in{display:flex;gap:6px;align-items:center}
+.ai-ic{color:var(--ink);display:grid;place-items:center}
+.ai-prompt{flex:1;min-width:0;border:1px solid var(--line2);background:var(--raise);color:var(--text);border-radius:8px;padding:7px 10px;font:inherit;font-size:13.5px}
+.ai-prompt:focus{outline:2px solid var(--emerald);outline-offset:-1px}
+.ai-chips{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.ai-chips .chip{cursor:pointer}
+.ai-chips .chip:hover{border-style:solid;color:var(--text)}
+.ai-bar[data-busy] .ai-prompt{opacity:.6}
+@media (max-width:760px){.ai-in{flex-wrap:wrap}.ai-prompt{flex-basis:100%}}

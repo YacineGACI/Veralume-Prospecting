@@ -59,6 +59,23 @@ follow-ups; a "stop" reply marks it Do not contact; a bounce flags the address.
 Addresses that don't reach the lead are flagged and never used: a network's head office
 (`contact@safti.fr`), a data-protection inbox, an email or phone shared by many leads.
 
+### Writing with AI
+
+In the composer and the template editor, type what you want ("plus court, parle de leurs
+photos d'intérieur") and press Enter: the AI rewrites the email, or writes a new draft. Quick
+buttons cover the usual changes, and every change can be undone. The AI sees only what the
+app knows about the lead (name, town, website, measured lean, past emails) and the offer
+written in Settings; it is told not to invent anything, and the app adds the opt-out footer.
+
+Pick the AI in Settings once its key is in `.env` (see `.env.example`): Gemini or Mistral
+(free tiers; lead details go to that provider), Ollama (free, runs on this machine) or
+Claude (paid, `claude-opus-5-5` by default; set `PROSPECT_AI_MODEL_CLAUDE` to change it).
+
+### A/B tests
+
+Compare two to four first emails on one segment: each new lead gets one version, and the
+A/B tests view shows each version's reply rate and its chance of being the best.
+
 ## Free sources and their limits
 
 - **Register** (recherche-entreprises.api.gouv.fr): every agency, no phone or website.

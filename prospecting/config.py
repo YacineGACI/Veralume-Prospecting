@@ -64,6 +64,18 @@ class Settings(BaseSettings):
     # Run the background sender and inbox reader inside `prospect serve`.
     run_worker: bool = True
 
+    # Writing emails from a prompt. Set any of these; the one used is chosen in Settings.
+    # Free: a Gemini or Mistral free-tier key, or Ollama running on this machine.
+    # Paid: an Anthropic API key (Claude).
+    gemini_api_key: str | None = None
+    mistral_api_key: str | None = None
+    anthropic_api_key: str | None = None  # or ANTHROPIC_API_KEY
+    ollama_url: str | None = None  # e.g. http://localhost:11434
+    ai_model_gemini: str = "gemini-2.5-flash"
+    ai_model_mistral: str = "mistral-small-latest"
+    ai_model_claude: str = "claude-opus-5-5"
+    ai_model_ollama: str = "qwen2.5:3b"
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "prospecting.db"

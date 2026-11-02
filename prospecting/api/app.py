@@ -16,6 +16,7 @@ from sqlalchemy import func, or_, select
 from prospecting import enrich, mailer, scoring, screen, worker
 from prospecting.api.experiments import router as experiments_router
 from prospecting.api.outreach import router as outreach_router
+from prospecting.api.writer import router as writer_router
 from prospecting.config import settings
 from prospecting.contacts import (
     email_problem,
@@ -49,6 +50,7 @@ app.mount("/photos", StaticFiles(directory=settings.photos_dir), name="photos")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
 app.include_router(outreach_router)
 app.include_router(experiments_router)
+app.include_router(writer_router)
 
 
 def _get(s, lead_id: int) -> Lead:
