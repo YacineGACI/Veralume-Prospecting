@@ -1,0 +1,288 @@
+"""SQLite storage: leads, the photos measured on their sites, and the contact log.
+
+Every contact fact keeps its source (`{"value", "source"}`), so "where did you get my
+email?" always has an answer.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import UTC, datetime
+from typing import Any
+
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
+
+from prospecting.config import settings
+
+KINDS = ("agency", "independent_agent", "photographer", "other")
+STATUSES = (
+    "new",
+    "shortlisted",
+    "contacted",
+    "replied",
+    "interview",
+    "pilot",
+    "customer",
+    "lost",
+)
+ACTIVITY_KINDS = (
+    "note", "email", "email_in", "call", "visit", "interview", "photos_sent", "status",
+)  # fmt: skip
+# Call outcomes, as logged by call mode.
+CALL_OUTCOMES = {
+    "no_answer": "No answer",
+    "voicemail": "Voicemail",
+    "callback": "Call back",
+    "interested": "Interested",
+    "not_interested": "Not interested",
+    "wrong_number": "Wrong number",
+}
+# Outbound: queued (written, waiting for review) → approved (sends at the next free slot)
+# → sent | failed; cancelled when the lead replies. Inbound: received.
+MESSAGE_STATUSES = ("queued", "approved", "sent", "failed", "cancelled", "received")
+
+
+def now() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class Lead(Base):
+    __tablename__ = "leads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    name: Mapped[str] = mapped_column(String(300))
+    legal_name: Mapped[str | None] = mapped_column(String(300))
+    siren: Mapped[str | None] = mapped_column(String(9), index=True)
+    siret: Mapped[str | None] = mapped_column(String(14), unique=True)
+    osm_id: Mapped[str | None] = mapped_column(String(40), unique=True)
+    places_id: Mapped[str | None] = mapped_column(String(200), unique=True)
+    legal_form: Mapped[str | None] = mapped_column(String(8))
+    company_category: Mapped[str | None] = mapped_column(String(8))
+    headcount: Mapped[str | None] = mapped_column(String(4))
+    branches: Mapped[int | None] = mapped_column(Integer)
+    founded: Mapped[str | None] = mapped_column(String(10))
+    network: Mapped[str | None] = mapped_column(String(80))
+
+    address: Mapped[str | None] = mapped_column(String(300))
+    postcode: Mapped[str | None] = mapped_column(String(10))
+    city: Mapped[str | None] = mapped_column(String(120), index=True)
+    lat: Mapped[float | None] = mapped_column(Float)
+    lon: Mapped[float | None] = mapped_column(Float)
+    distance_km: Mapped[float | None] = mapped_column(Float)
+
+    website: Mapped[str | None] = mapped_column(String(500))
+    website_source: Mapped[str | None] = mapped_column(String(300))
+    emails: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    phones: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    people: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    socials: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    sources: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    listings_seen: Mapped[int | None] = mapped_column(Integer)
+    rating: Mapped[float | None] = mapped_column(Float)
+    rating_count: Mapped[int | None] = mapped_column(Integer)
+
+    # Pipeline progress: None (to do), done, no_website, no_photos, error.
+    enrich_status: Mapped[str | None] = mapped_column(String(20), index=True)
+    enrich_note: Mapped[str | None] = mapped_column(String(300))
+    enriched_at: Mapped[str | None] = mapped_column(String(32))
+    screen_status: Mapped[str | None] = mapped_column(String(20), index=True)
+    screened_at: Mapped[str | None] = mapped_column(String(32))
+    lean_median: Mapped[float | None] = mapped_column(Float)
+    lean_max: Mapped[float | None] = mapped_column(Float)
+    photos_measured: Mapped[int] = mapped_column(Integer, default=0)
+
+    score: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    score_reasons: Mapped[list[str]] = mapped_column(JSON, default=list)
+
+    status: Mapped[str] = mapped_column(String(20), default="new", index=True)
+    do_not_contact: Mapped[bool] = mapped_column(Boolean, default=False)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(String(32), default=now)
+    updated_at: Mapped[str] = mapped_column(String(32), default=now, onupdate=now)
+
+    # Outreach. next_action is "call" (a call-back or a lead put in the call queue) or a
+    # free text reminder; it shows in Today once next_action_at has passed.
+    next_action: Mapped[str | None] = mapped_column(String(200))
+    next_action_at: Mapped[str | None] = mapped_column(String(32), index=True)
+    last_contacted_at: Mapped[str | None] = mapped_column(String(32))
+    snoozed_until: Mapped[str | None] = mapped_column(String(32))
+    campaign_id: Mapped[int | None] = mapped_column(Integer, index=True)
+
+    photos: Mapped[list[Photo]] = relationship(
+        back_populates="lead", cascade="all, delete-orphan", order_by="Photo.id"
+    )
+    activities: Mapped[list[Activity]] = relationship(
+        back_populates="lead", cascade="all, delete-orphan", order_by="Activity.at.desc()"
+    )
+
+    def add_source(self, kind: str, url: str | None = None) -> None:
+        sources = self.sources or []
+        if any(s["kind"] == kind and s.get("url") == url for s in sources):
+            return
+        self.sources = [*sources, {"kind": kind, "url": url, "at": now()}]
+
+    def add_contact(self, field: str, value: str, source: str) -> bool:
+        """Append an email or phone if new. JSON columns need a new list to be saved."""
+        items: list[dict[str, Any]] = getattr(self, field) or []
+        if any(i["value"] == value for i in items):
+            return False
+        setattr(self, field, [*items, {"value": value, "source": source}])
+        return True
+
+    def add_person(self, name: str, role: str | None, source: str) -> None:
+        people = self.people or []
+        if any(p["name"].lower() == name.lower() for p in people):
+            return
+        self.people = [*people, {"name": name, "role": role, "source": source}]
+
+    def add_tags(self, tags: set[str]) -> None:
+        self.tags = sorted(set(self.tags or []) | tags)
+
+
+class Photo(Base):
+    __tablename__ = "photos"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    url: Mapped[str] = mapped_column(String(1000))
+    page_url: Mapped[str | None] = mapped_column(String(1000))
+    path: Mapped[str | None] = mapped_column(String(300))
+    width: Mapped[int | None] = mapped_column(Integer)
+    height: Mapped[int | None] = mapped_column(Integer)
+    # Length-weighted median lean of near-vertical lines, degrees (Veralume's measure).
+    lean_deg: Mapped[float | None] = mapped_column(Float)
+    n_lines: Mapped[int | None] = mapped_column(Integer)
+    roll_deg: Mapped[float | None] = mapped_column(Float)
+    pitch_deg: Mapped[float | None] = mapped_column(Float)
+    error: Mapped[str | None] = mapped_column(String(300))
+    measured_at: Mapped[str | None] = mapped_column(String(32))
+
+    lead: Mapped[Lead] = relationship(back_populates="photos")
+
+
+class Activity(Base):
+    __tablename__ = "activities"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    at: Mapped[str] = mapped_column(String(32), default=now)
+    kind: Mapped[str] = mapped_column(String(20))
+    text: Mapped[str] = mapped_column(Text, default="")
+
+    lead: Mapped[Lead] = relationship(back_populates="activities")
+
+
+class SearchQuery(Base):
+    """Searches already run, so slow free searches can resume where they stopped."""
+
+    __tablename__ = "search_queries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    engine: Mapped[str] = mapped_column(String(20))
+    query: Mapped[str] = mapped_column(String(300))
+    results: Mapped[int] = mapped_column(Integer, default=0)
+    at: Mapped[str] = mapped_column(String(32), default=now)
+
+
+class Template(Base):
+    """An email template. step 0 is a first email, 1 and 2 are follow-ups, -1 a reply.
+
+    Placeholders: {prenom} {agence} {ville} {lean} {n} {site}.
+    """
+
+    __tablename__ = "templates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    key: Mapped[str] = mapped_column(String(40), unique=True)
+    name: Mapped[str] = mapped_column(String(120))
+    segment: Mapped[str] = mapped_column(String(32), default="any")  # a kind, or "any"
+    step: Mapped[int] = mapped_column(Integer, default=0)
+    subject: Mapped[str] = mapped_column(String(300))
+    body: Mapped[str] = mapped_column(Text)
+    attach_photo: Mapped[bool] = mapped_column(Boolean, default=True)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    updated_at: Mapped[str] = mapped_column(String(32), default=now, onupdate=now)
+
+
+class Campaign(Base):
+    """A segment, a first-email template, follow-ups and a daily cap."""
+
+    __tablename__ = "campaigns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160))
+    kind: Mapped[str] = mapped_column(String(32))
+    # Filters: {"dep": "67", "min_lean": 3, "measured": true}
+    filters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    template_id: Mapped[int | None] = mapped_column(Integer)
+    followups: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    daily_cap: Mapped[int] = mapped_column(Integer, default=20)
+    status: Mapped[str] = mapped_column(String(12), default="draft")  # draft running paused
+    created_at: Mapped[str] = mapped_column(String(32), default=now)
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    direction: Mapped[str] = mapped_column(String(3), default="out")  # out | in
+    status: Mapped[str] = mapped_column(String(12), index=True)
+    to_addr: Mapped[str | None] = mapped_column(String(300))
+    from_addr: Mapped[str | None] = mapped_column(String(300))
+    subject: Mapped[str] = mapped_column(String(300), default="")
+    body: Mapped[str] = mapped_column(Text, default="")
+    template_id: Mapped[int | None] = mapped_column(Integer)
+    campaign_id: Mapped[int | None] = mapped_column(Integer)
+    step: Mapped[int] = mapped_column(Integer, default=0)
+    attach_photo_id: Mapped[int | None] = mapped_column(Integer)
+    due_at: Mapped[str | None] = mapped_column(String(32), index=True)
+    sent_at: Mapped[str | None] = mapped_column(String(32), index=True)
+    message_id: Mapped[str | None] = mapped_column(String(300), index=True)
+    in_reply_to: Mapped[str | None] = mapped_column(String(300))
+    error: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[str] = mapped_column(String(32), default=now)
+
+
+class Setting(Base):
+    """Small app settings edited from the UI (goals, default segment, sender name)."""
+
+    __tablename__ = "settings"
+
+    key: Mapped[str] = mapped_column(String(60), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON)
+
+
+settings.data_dir.mkdir(parents=True, exist_ok=True)
+engine = create_engine(
+    f"sqlite:///{settings.db_path}", connect_args={"check_same_thread": False, "timeout": 30}
+)
+Base.metadata.create_all(engine)
+
+
+def _migrate() -> None:
+    """Add columns created after the first release (SQLite: ALTER TABLE ADD COLUMN)."""
+    with engine.begin() as c:
+        for table in Base.metadata.sorted_tables:
+            have = {r[1] for r in c.exec_driver_sql(f"PRAGMA table_info({table.name})")}
+            for col in table.columns:
+                if col.name not in have:
+                    ddl = col.type.compile(engine.dialect)
+                    c.exec_driver_sql(f"ALTER TABLE {table.name} ADD COLUMN {col.name} {ddl}")
+
+
+_migrate()
+
+
+@contextmanager
+def session() -> Iterator[Session]:
+    with Session(engine, expire_on_commit=False) as s:
+        yield s

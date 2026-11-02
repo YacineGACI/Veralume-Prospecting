@@ -1,0 +1,36 @@
+[project]
+name = "veralume-prospecting"
+version = "0.1.0"
+description = "Finds, screens and tracks pilot customers for Veralume (real-estate photo editing) around Strasbourg"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "httpx>=0.27",
+    "sqlalchemy>=2.0",
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "typer>=0.12",
+    "selectolax>=0.3.21",
+    "pillow>=10.4",
+]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[project.scripts]
+prospect = "prospecting.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["prospecting"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
