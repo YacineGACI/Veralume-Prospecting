@@ -239,7 +239,10 @@ export async function openComposer(leadId, templateId = null) {
     <div class="cp-l">
       <div class="row" style="flex-wrap:nowrap">${av(l)}<div style="flex:1;min-width:0"><b>${esc(who(l))}</b><div class="small muted">${l.person ? esc(l.name) + " · " : ""}${esc(l.city || "")} · ${MODE[c.mode]}</div></div><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
       ${c.last_in ? `<div class="quote"><b>They wrote</b> (${esc(when(c.last_in.at))}):\n${esc(c.last_in.body)}</div>` : ""}
-      ${tpls.length > 1 ? `<div class="tpls" role="group" aria-label="Template">${tpls.map((t) => `<button aria-pressed="${t.id === c.template_id}" data-tpl="${t.id}">${esc(t.name)}</button>`).join("")}</div>` : ""}
+      ${c.test ? `<div class="ab-tag">${c.test.in_test
+        ? `A/B test “${esc(c.test.name)}”: this lead gets version ${c.test.letter} of ${c.test.versions}. Small edits are fine.`
+        : `You picked another template, so this lead is out of the test “${esc(c.test.name)}”.`}</div>` : ""}
+      ${tpls.length > 1 ? `<div class="tpls" role="group" aria-label="Template">${tpls.map((t) => `<button aria-pressed="${t.id === c.template_id}" data-tpl="${t.id}">${c.test?.template_id === t.id ? `${c.test.letter} · ` : ""}${esc(t.name)}</button>`).join("")}</div>` : ""}
       <div class="field"><span class="k">To</span>${noAddr ? `<span class="flag">No address yet. Add one in the lead file.</span>` : `<select id="cp-to" aria-label="To">${opts.map((a) => `<option value="${esc(a)}" ${a === c.to ? "selected" : ""}>${esc(a)}${c.usable.includes(a) ? "" : " (not theirs)"}</option>`).join("")}</select>`}</div>
       <div class="field"><span class="k">From</span><span>${esc(mb.sender || "your mailbox (not connected yet)")}</span></div>
       <div class="field"><span class="k">Subject</span><input id="cp-subject" value="${esc(c.subject)}" aria-label="Subject"></div>
@@ -266,6 +269,8 @@ export async function openComposer(leadId, templateId = null) {
     body: sheet.querySelector("#cp-body").value, template_id: c.template_id,
     attach_photo_id: sheet.querySelector("#cp-attach")?.checked && c.photo ? c.photo.id : null,
     in_reply_to: c.in_reply_to, step: c.step, followups: sheet.querySelector("#cp-fu")?.checked ?? false, when: whenTo,
+    experiment_id: c.test?.in_test ? c.test.id : null,
+    edited: sheet.querySelector("#cp-subject").value !== c.subject || sheet.querySelector("#cp-body").value !== c.body,
   });
   sheet.onclick = async (e) => {
     const t = e.target.closest("button, a");
@@ -287,10 +292,12 @@ export async function openComposer(leadId, templateId = null) {
       });
     }
     if (d.copy !== undefined) {
-      const p = payload("now");
+      // Recorded as a sent email (no follow-ups: the app can't send them for you), so it
+      // counts in goals, campaigns and A/B tests like any other.
+      const p = { ...payload("external"), followups: false };
       try { await navigator.clipboard.writeText(`${p.subject}\n\n${p.body}\n\n--\n${c.footer}`); } catch { sheet.querySelector("#cp-body").select(); }
       await busy(t, async () => {
-        await api(`/api/leads/${l.id}/activities`, { method: "POST", body: { kind: "email", text: `${p.subject} (sent from your mail app to ${p.to})` } });
+        await api("/api/send", { method: "POST", body: p });
         closeModal();
         changed();
         if (drawer.lead?.id === l.id) await reload();

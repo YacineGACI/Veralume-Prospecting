@@ -11,10 +11,12 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from prospecting import inbox, mailer, outreach, worker
+from prospecting import experiments, inbox, mailer, outreach, worker
 from prospecting.config import settings
 from prospecting.contacts import shared_contacts, usable_emails
-from prospecting.db import KINDS, STATUSES, Campaign, Lead, Message, Photo, Template, now, session
+from prospecting.db import (
+    KINDS, STATUSES, Campaign, Experiment, Lead, Message, Photo, Template, now, session,
+)  # fmt: skip
 from prospecting.mailer import MailError
 from prospecting.outreach import summary
 
@@ -34,7 +36,7 @@ def _msg(m: Message) -> dict[str, Any]:
         "subject": m.subject, "body": m.body, "to": m.to_addr, "step": m.step,
         "due_at": m.due_at, "sent_at": m.sent_at, "error": m.error,
         "campaign_id": m.campaign_id, "template_id": m.template_id,
-        "attach_photo_id": m.attach_photo_id,
+        "attach_photo_id": m.attach_photo_id, "experiment_id": m.experiment_id,
     }  # fmt: skip
 
 
@@ -107,10 +109,21 @@ def compose(lead_id: int, template_id: int | None = None) -> dict[str, Any]:
                                   Message.status == "sent").order_by(Message.id)
         ).first()  # fmt: skip
         mode = "reply" if last_in else ("followup" if first_sent else "first")
+        ab = experiments.assign(s, lead) if mode == "first" else None
         if template_id:
             t = s.get(Template, template_id)
+        elif ab:
+            t = ab[0]
         else:
             t = mailer.pick_template(s, lead, {"reply": -1, "followup": 1, "first": 0}[mode])
+        test = None
+        if ab:  # picking another template takes this lead out of the test
+            vs = experiments.versions(s, ab[1])
+            test = {
+                "id": ab[1].id, "name": ab[1].name, "template_id": ab[0].id,
+                "letter": experiments.LETTERS[[v.id for v in vs].index(ab[0].id)],
+                "versions": len(vs), "in_test": t is not None and t.id == ab[0].id,
+            }  # fmt: skip
         if t is None:
             raise HTTPException(404, "No template fits this lead. Add one in Campaigns.")
         d = mailer.draft(s, lead, t)
@@ -143,7 +156,7 @@ def compose(lead_id: int, template_id: int | None = None) -> dict[str, Any]:
             "templates": [{"id": x.id, "name": x.name, "step": x.step}
                           for x in tpls if x.segment in ("any", lead.kind, seg)],
             "followups": mailer.get_setting(s, "followups", mailer.DEFAULT_FOLLOWUPS),
-            "mailbox": mailbox_status(s),
+            "mailbox": mailbox_status(s), "test": test,
         }  # fmt: skip
 
 
@@ -157,7 +170,11 @@ class SendIn(BaseModel):
     in_reply_to: str | None = None
     step: int = 0
     followups: bool = True
-    when: str = "now"  # now | queue (approved: goes out at the next free slot)
+    # now | queue (approved: goes out at the next free slot) | external (you sent it from
+    # your own mail app: recorded as sent, no follow-ups)
+    when: str = "now"
+    experiment_id: int | None = None
+    edited: bool | None = None
 
 
 @router.post("/send")
@@ -175,14 +192,20 @@ def send(b: SendIn) -> dict[str, Any]:
                                      Message.status == "sent")
         )  # fmt: skip
         step = b.step if b.step != 0 or not already else 1  # never restart a sequence
+        exp = s.get(Experiment, b.experiment_id) if b.experiment_id and step == 0 else None
+        if exp and (exp.kind != lead.kind or b.template_id not in exp.template_ids):
+            exp = None
         # The email you wrote replaces whatever was waiting for this lead.
         mailer.cancel_pending(s, lead.id, "replaced by an email you wrote")
         msg = mailer.new_outbound(
             s, lead, subject=b.subject.strip(), body=b.body.strip(), to=b.to.strip().lower(),
             step=step, template_id=b.template_id, attach_photo_id=b.attach_photo_id,
             in_reply_to=b.in_reply_to, status="approved",
+            experiment_id=exp.id if exp else None, edited=b.edited if step == 0 else None,
         )  # fmt: skip
-        if b.when == "now":
+        if b.when == "external":
+            mailer.log_external(s, msg)
+        elif b.when == "now":
             try:
                 mailer.send(s, msg, followups=b.followups)
             except MailError as e:
@@ -239,6 +262,11 @@ def _pending(s, message_id: int) -> Message:
 def edit_message(message_id: int, p: MessagePatch) -> dict[str, Any]:
     with session() as s:
         m = _pending(s, message_id)
+        if m.step == 0 and (
+            (p.subject is not None and p.subject != m.subject)
+            or (p.body is not None and p.body != m.body)
+        ):
+            m.edited = True
         if p.subject is not None:
             m.subject = p.subject
         if p.body is not None:
@@ -391,7 +419,9 @@ def save_template(template_id: int, t: TemplateIn) -> dict[str, Any]:
 def _camp(s, c: Campaign) -> dict[str, Any]:
     return {"id": c.id, "name": c.name, "kind": c.kind, "filters": c.filters or {},
             "template_id": c.template_id, "daily_cap": c.daily_cap, "status": c.status,
-            "stats": outreach.campaign_stats(s, c)}  # fmt: skip
+            "stats": outreach.campaign_stats(s, c),
+            "test": (e.name if not c.template_id and (e := experiments.running_for(s, c.kind))
+                     else None)}  # fmt: skip
 
 
 @router.get("/campaigns")

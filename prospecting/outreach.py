@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from prospecting import mailer
+from prospecting import experiments, mailer
 from prospecting.contacts import flags, mark, shared_contacts, usable_emails, usable_phones
 from prospecting.db import (
     CALL_OUTCOMES,
@@ -360,12 +360,14 @@ def prepare(s: Session, c: Campaign, n: int | None = None) -> int:
     leads.sort(key=lambda l: (not (SMALL_NEW & set(l.tags or [])), -l.score))
     made = 0
     for lead in leads[:n]:
-        tpl = t or mailer.pick_template(s, lead)
+        # A campaign with a fixed first email stays out of A/B tests.
+        tpl, exp = (t, None) if t else experiments.choose_first(s, lead)
         if tpl is None:
             break
         d = mailer.draft(s, lead, tpl)
         mailer.new_outbound(s, lead, subject=d["subject"], body=d["body"], template_id=tpl.id,
-                            campaign_id=c.id, attach_photo_id=d["attach_photo_id"])  # fmt: skip
+                            campaign_id=c.id, attach_photo_id=d["attach_photo_id"],
+                            experiment_id=exp.id if exp else None)  # fmt: skip
         lead.campaign_id = c.id
         made += 1
     return made

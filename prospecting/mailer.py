@@ -160,9 +160,28 @@ def footer(lead: Lead, to: str) -> str:
     return f"{OPT_OUT}\n{settings.mail_from_name}, {settings.sender_city}{origin}"
 
 
+def fits_lead(t: Template, lead: Lead) -> bool:
+    """Whether a template says nothing untrue about this lead: it may quote the lean only
+    when we measured a visible one, and call the photos straight only when measured so."""
+    if t.key == "after_voicemail":
+        return False
+    lean = lead.lean_median
+    if "{lean}" in t.body + t.subject and (lean is None or lean < 1):
+        return False
+    if t.key == "ph_straight" and (lean is None or lean >= 1):
+        return False
+    return True
+
+
 def pick_template(s: Session, lead: Lead, step: int = 0) -> Template | None:
     """The template that fits this lead: its segment first, and one that talks about the
-    lean only when we measured a visible lean (1° or more) on their photos."""
+    lean only when we measured a visible lean (1° or more) on their photos. A first email
+    that won an A/B test for this segment comes first whenever it fits."""
+    if step == 0:
+        won = get_setting(s, f"first_template:{lead.kind}", None)
+        t = s.get(Template, won) if won else None
+        if t is not None and not t.archived and t.step == 0 and fits_lead(t, lead):
+            return t
     rows = list(
         s.scalars(select(Template).where(Template.step == step, Template.archived.is_(False)))
     )
@@ -316,11 +335,25 @@ def send(s: Session, msg: Message, followups: bool = True) -> Message:
     except MailError as e:
         msg.status, msg.error = "failed", str(e)[:500]
         raise
-    msg.status, msg.sent_at, msg.error = "sent", now(), None
     msg.from_addr = settings.sender
+    return record_sent(s, msg, lead, followups)
+
+
+def log_external(s: Session, msg: Message) -> Message:
+    """You sent this one from your own mail app: record it like a sent email (it counts in
+    goals, campaigns and A/B tests) without follow-ups, which the app couldn't send."""
+    lead = s.get(Lead, msg.lead_id)
+    msg.from_addr = "your mail app"
+    return record_sent(s, msg, lead, followups=False, note=f" (from your mail app to {msg.to_addr})")
+
+
+def record_sent(
+    s: Session, msg: Message, lead: Lead, followups: bool = True, note: str = ""
+) -> Message:
+    msg.status, msg.sent_at, msg.error = "sent", now(), None
     lead.last_contacted_at = msg.sent_at
     label = {0: "Email", 1: "Follow-up 1", 2: "Follow-up 2", -1: "Reply"}.get(msg.step, "Email")
-    s.add(Activity(lead_id=lead.id, kind="email", text=f"{label} · {msg.subject}"))
+    s.add(Activity(lead_id=lead.id, kind="email", text=f"{label} · {msg.subject}{note}"))
     if lead.status in ("new", "shortlisted"):
         s.add(Activity(lead_id=lead.id, kind="status", text=f"{lead.status} → contacted"))
         lead.status = "contacted"
@@ -334,11 +367,13 @@ def new_outbound(
     template_id: int | None = None, campaign_id: int | None = None,
     attach_photo_id: int | None = None, in_reply_to: str | None = None,
     status: str = "queued", due_at: str | None = None,
+    experiment_id: int | None = None, edited: bool | None = None,
 ) -> Message:  # fmt: skip
     to = to or next(iter(usable_emails(lead, shared_contacts()[0])), None)
     msg = Message(
         lead_id=lead.id, direction="out", status=status, to_addr=to, subject=subject, body=body,
         step=step, template_id=template_id, campaign_id=campaign_id,
+        experiment_id=experiment_id, edited=edited,
         attach_photo_id=attach_photo_id, in_reply_to=in_reply_to, due_at=due_at or now(),
     )  # fmt: skip
     s.add(msg)

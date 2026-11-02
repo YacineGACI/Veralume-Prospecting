@@ -430,7 +430,7 @@ export const campaigns = {
         <div class="row"><h3>${esc(x.name)}</h3><span class="pill ${x.status === "running" ? "st-pilot" : "st-new"}">${label}</span><span class="grow"></span>
           <button class="btn sm" data-edit-camp="${x.id}">Edit</button>
           <button class="btn sm ${x.status === "running" ? "" : "primary"}" data-camp-status="${x.id}" data-to="${x.status === "running" ? "paused" : "running"}">${x.status === "running" ? "Pause" : "Start"}</button></div>
-        <div class="small muted">${esc(KINDS_PL[x.kind])}${x.filters.dep ? ` in ${esc(x.filters.dep)}` : ""}${x.filters.min_lean ? `, lean ≥ ${esc(x.filters.min_lean)}°` : ""}${x.filters.measured ? ", photos measured" : ""} · first email: ${esc(tplName(x.template_id))} · ${x.daily_cap} a day</div>
+        <div class="small muted">${esc(KINDS_PL[x.kind])}${x.filters.dep ? ` in ${esc(x.filters.dep)}` : ""}${x.filters.min_lean ? `, lean ≥ ${esc(x.filters.min_lean)}°` : ""}${x.filters.measured ? ", photos measured" : ""} · first email: ${x.test ? `<a href="#tests">A/B test “${esc(x.test)}”</a>` : esc(tplName(x.template_id))} · ${x.daily_cap} a day</div>
         <div class="prog" title="${s.replied} replied, ${s.emailed - s.replied} no reply yet"><span style="width:${(s.replied / total) * 100}%;background:var(--warn)"></span><span style="width:${((s.emailed - s.replied) / total) * 100}%;background:var(--emerald)"></span></div>
         <div class="stats"><div><b>${s.emailed}</b><span>emailed</span></div><div><b>${s.replied}</b><span>replied</span></div><div><b>${s.emailed ? Math.round((s.replied / s.emailed) * 100) : 0}%</b><span>reply rate</span></div><div><b>${s.matching}</b><span>with their email</span></div></div>
         ${s.steps.length ? `<div class="steps"><div class="h"><span>Step</span><span>Template</span><span class="num">Sent</span><span class="num">Replies</span></div>${s.steps.map((st) => `<div><span class="mono">${esc(STEP[st.step] || st.step)}</span><span>${esc(st.template)}</span><span class="num">${st.sent}</span><span class="num">${st.replies}</span></div>`).join("")}</div>` : ""}
@@ -494,8 +494,11 @@ export const campaigns = {
       });
     };
   },
-  editTpl(x) {
-    const v = x || { name: "", segment: "any", step: 0, subject: "", body: "Bonjour {prenom},\n\n\n\n{signature}", attach_photo: true, archived: false };
+  // x: the template to edit (null for a new one). copy: a template to start a new one from.
+  // onSaved: called with the saved template instead of re-rendering Campaigns.
+  editTpl(x, { copy = null, segment = null, step = null, onSaved = null } = {}) {
+    const v = x || (copy ? { ...copy, name: `${copy.name} (new version)`, archived: false }
+      : { name: "", segment: segment || "any", step: step ?? 0, subject: "", body: "Bonjour {prenom},\n\n\n\n{signature}", attach_photo: true, archived: false });
     const sheet = openModal(`<div class="sheet-h"><h2>${x ? "Edit template" : "New template"}</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
       <form class="sheet-b"><div class="form-grid">
         <label class="full">Name<input class="input" name="name" value="${esc(v.name)}" required></label>
@@ -506,16 +509,171 @@ export const campaigns = {
         <label class="check"><input type="checkbox" class="chk" name="attach_photo" ${v.attach_photo ? "checked" : ""}> Attach their marked photo</label>
         <label class="check"><input type="checkbox" class="chk" name="archived" ${v.archived ? "checked" : ""}> Archived (not offered)</label></div>
         <p class="small dim" style="margin:0">Placeholders: {prenom} first name (left out when unknown), {agence} business name, {ville} town, {lean} measured lean, {n} photos measured, {site} website, {signature} your signature. Follow-ups keep the first email's subject.</p>
-        <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`);
-    sheet.onclick = (e) => { if (e.target.closest("[data-close]")) closeModal(); };
-    sheet.onsubmit = async (e) => {
-      e.preventDefault();
-      const f = e.target;
+        <div class="row">${x ? `<button class="btn" type="button" data-save-copy title="Keeps this one as it is">Save as a new template</button>` : ""}<span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`);
+    const save = async (f, asNew, btn) => {
       const body = { name: f.name.value, segment: f.segment.value, step: +f.step.value, subject: f.subject.value, body: f.body.value, attach_photo: f.attach_photo.checked, archived: f.archived.checked };
-      await busy(f.querySelector(".primary"), async () => {
-        await api(x ? `/api/templates/${x.id}` : "/api/templates", { method: x ? "PUT" : "POST", body });
+      if (asNew && body.name === x.name) body.name = `${x.name} (new version)`;
+      await busy(btn, async () => {
+        const saved = await api(x && !asNew ? `/api/templates/${x.id}` : "/api/templates", { method: x && !asNew ? "PUT" : "POST", body });
         closeModal();
         toast("Template saved");
+        if (onSaved) onSaved(saved); else this.render();
+      });
+    };
+    sheet.onclick = (e) => {
+      if (e.target.closest("[data-close]")) closeModal();
+      const c = e.target.closest("[data-save-copy]");
+      if (c) save(sheet.querySelector("form"), true, c);
+    };
+    sheet.onsubmit = (e) => { e.preventDefault(); save(e.target, false, e.target.querySelector(".primary")); };
+  },
+};
+
+// --- A/B tests ---------------------------------------------------------------------------
+const AB_COL = ["var(--emerald)", "var(--blue)", "var(--violet)", "var(--warn)"];
+const pct = (v, d = 0) => (v == null ? "–" : `${(v * 100).toFixed(d)} %`);
+const VERDICT = { winner: "ok", early: "warn", leaning: "info", tie: "info", waiting: "info" };
+
+export const tests = {
+  draft: null, // the "new test" form, kept while a version is being written
+  async render() {
+    const x = await api("/api/experiments");
+    this.x = x;
+    const running = x.items.filter((e) => e.status === "running");
+    const done = x.items.filter((e) => e.status !== "running");
+    C().innerHTML = `<div class="view">
+      <div class="topline"><div><h1>A/B tests</h1><div class="sub">Send two to four versions of your first email to the same kind of lead, and see which one gets more replies.</div></div><span class="grow"></span><button class="btn primary" data-new-test>${small(I.plus)} New test</button></div>
+      ${running.map((e) => this.card(e)).join("") || `<section class="card ab"><h3 class="ab-title">No test running</h3>
+        <p class="small muted" style="margin:0;max-width:62ch">While a test runs, every new lead of its segment gets one of the versions, chosen to keep them even. That applies to the composer and to campaigns that let the app pick the first email. Replies are counted per version, follow-ups included, and the app tells you when one version has really won rather than got lucky.</p>
+        <div><button class="btn primary" data-new-test data-preset="photographer">Test a first email for photographers</button></div></section>`}
+      ${done.length ? `<h2 class="ab-sec">Finished</h2>${done.map((e) => this.card(e)).join("")}` : ""}
+      ${this.howto()}</div>`;
+    C().onclick = (e) => this.click(e);
+  },
+  card(e) {
+    const r = e.results, live = e.status === "running";
+    const metric = e.metric === "reply" ? "replies" : "interested";
+    const top = Math.max(0.1, ...r.versions.map((v) => v.high || 0)) * 1.1;
+    const pos = (v) => `${Math.min(100, (v / top) * 100).toFixed(1)}%`;
+    const row = (v, i) => {
+      const win = e.winner_id === v.template_id || (live && r.verdict.state === "winner" && r.leader === v.letter);
+      return `<div class="ab-row ${win ? "win" : ""}">
+        <span class="ab-l" style="background:${AB_COL[i]}">${v.letter}</span>
+        <div style="min-width:0"><b>${esc(v.name)}</b>${win ? ` <span class="pill st-pilot">${live ? "ahead" : "winner"}</span>` : ""}${v.archived ? ` <span class="tag">archived</span>` : ""}<div class="small muted ab-subj" title="${esc(v.subject)}">${esc(v.subject)}</div></div>
+        <div class="ab-rate"><b>${pct(v.rate)}</b><span>${v.hits} of ${v.sent}${v.waiting ? ` · ${v.waiting} waiting` : ""}</span></div>
+        <div class="ab-range c-range" title="Likely range of the true rate (90 %): ${pct(v.low, 1)} to ${pct(v.high, 1)}">${v.sent ? `<span class="band" style="left:${pos(v.low)};width:calc(${pos(v.high)} - ${pos(v.low)});background:${AB_COL[i]}"></span><span class="dot" style="left:${pos(v.rate || 0)};background:${AB_COL[i]}"></span>` : ""}</div>
+        <div class="ab-best"><span class="mono">${v.sent ? pct(v.chance_best) : "–"}</span><div class="b"><span style="width:${(v.chance_best * 100).toFixed(1)}%;background:${AB_COL[i]}"></span></div></div></div>`;
+    };
+    const edited = r.versions.reduce((n, v) => n + v.edited, 0);
+    const stopped = r.versions.reduce((n, v) => n + v.stopped, 0);
+    const need = r.needed_each * r.versions.length;
+    const facts = [
+      `${r.sent} first emails sent${live && r.verdict.state !== "winner" ? ` of about ${need} needed to spot a version that ${e.metric === "reply" ? "doubles the reply rate" : "doubles interest"}` : ""}.`,
+      live && r.days_left && r.verdict.state !== "winner" ? `At ${r.pace} a working day, that's about ${r.days_left} more working days.` : "",
+      live && e.audience != null ? `${e.audience} ${KINDS_PL[e.kind].toLowerCase()} left to write to can enter.` : "",
+      r.audience_rule || "",
+      edited ? `${edited} ${edited > 1 ? "were" : "was"} changed by hand before sending; they still count for their version.` : "",
+      stopped ? `${stopped} answered “stop”: not counted as replies.` : "",
+    ].filter(Boolean);
+    return `<section class="card ab" data-exp="${e.id}">
+      <div class="ab-h"><h3 class="ab-title">${esc(e.name)}</h3><span class="pill ${live ? "st-pilot" : "st-new"}">${live ? "Running" : "Finished"}</span>
+        <span class="small muted">${esc(KINDS_PL[e.kind])} · measures ${metric} · since ${esc(at(e.created_at))}${e.ended_at ? ` to ${esc(at(e.ended_at))}` : ""}</span><span class="grow"></span>
+        ${live ? `<button class="btn sm" data-stop="${e.id}">Stop test…</button>` : ""}${live && !r.sent ? `<button class="btn ghost sm" data-del="${e.id}" title="Delete this test">${small(I.x)}</button>` : ""}</div>
+      ${live || e.winner_id ? `<div class="note ${VERDICT[r.verdict.state]}">${esc(r.verdict.text)}</div>` : ""}
+      <div class="ab-rows"><div class="ab-row h"><span></span><span>Version</span><span>${e.metric === "reply" ? "Reply rate" : "Interested"}</span><span class="c-range">Likely range</span><span>Chance best</span></div>${r.versions.map(row).join("")}</div>
+      <p class="small muted" style="margin:0">${facts.map(esc).join(" ")}</p>
+      <details class="ab-read"><summary class="small">Read the versions</summary>${r.versions.map((v, i) => `<div class="ab-ver"><span class="ab-l" style="background:${AB_COL[i]}">${v.letter}</span><div><b>${esc(v.subject)}</b><pre>${esc(v.body)}</pre></div></div>`).join("")}</details>
+    </section>`;
+  },
+  howto() {
+    return `<section class="card ab ab-how"><h3 class="ab-title" style="font-size:18px">Reading a test</h3>
+      <ul class="small muted">
+        <li><b>Chance best</b> is the probability that a version truly does best, given what came back so far. The app calls a winner at 95 % and at least 20 emails each.</li>
+        <li><b>Likely range</b> is where the true rate probably sits. While two ranges overlap a lot, the gap can still be luck.</li>
+        <li>Reply rates for cold emails sit around 2 to 10 %, so small tests can't separate close versions. Test bold differences (with or without their photo, short or long, lean or no lean), not a single word.</li>
+        <li>Replies you mark by hand (status Replied, Interview…) count too, so the test works even when you send from your own mail app.</li>
+      </ul></section>`;
+  },
+  async click(e) {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const d = b.dataset;
+    if (d.newTest !== undefined) { this.draft = null; return this.newTest(d.preset); }
+    if (d.stop) return this.stopTest(this.x.items.find((x) => x.id === +d.stop));
+    if (d.del) return busy(b, async () => { await api(`/api/experiments/${d.del}`, { method: "DELETE" }); toast("Test deleted"); this.render(); });
+  },
+  newTest(preset) {
+    const tpls = this.x.templates.filter((t) => !t.archived);
+    const v = this.draft || { name: "", kind: preset || "photographer", metric: "reply", ids: [] };
+    this.draft = v;
+    const fits = (t) => t.segment === "any" || t.segment === v.kind || (v.kind === "independent_agent" && t.segment === "agency");
+    const list = tpls.filter(fits);
+    const sheet = openModal(`<div class="sheet-h"><h2>New A/B test</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+      <form class="sheet-b"><div class="form-grid">
+        <label class="full">Name<input class="input" name="name" value="${esc(v.name)}" placeholder="e.g. Their photo vs no photo"></label>
+        <label>Segment<select class="select" name="kind">${SEGS.map((k) => `<option value="${k}" ${k === v.kind ? "selected" : ""}>${KINDS_PL[k]}</option>`).join("")}</select></label>
+        <label>Measure<select class="select" name="metric">${Object.entries(this.x.metrics).map(([k, t]) => `<option value="${k}" ${k === v.metric ? "selected" : ""}>${esc(t)}</option>`).join("")}</select></label></div>
+        <div><div class="small" style="margin-bottom:6px"><b>Versions to compare</b> <span class="muted">· pick 2 to 4 first emails</span></div>
+          <div class="ab-pick">${list.map((t) => `<label class="ab-opt"><input type="checkbox" class="chk" name="ids" value="${t.id}" ${v.ids.includes(t.id) ? "checked" : ""}>
+            <div style="min-width:0"><b>${esc(t.name)}</b><div class="small muted ab-subj">${esc(t.subject)} · ${esc(t.body.replace(/\s+/g, " ").slice(0, 90))}…</div>${/\{lean\}/.test(t.body + t.subject) ? `<div class="small" style="color:var(--warn)">Quotes their lean: only leads with a measured lean of 1° or more can enter.</div>` : t.key === "ph_straight" ? `<div class="small" style="color:var(--warn)">Says their photos are straight: only leads measured straight can enter.</div>` : ""}</div>
+            <button class="btn ghost sm" type="button" data-copy-tpl="${t.id}" title="Start a new version from this one">${small(I.copy)} New version</button></label>`).join("") || `<p class="small muted">No first email for this segment yet.</p>`}</div>
+          <button class="btn sm" type="button" data-blank-tpl style="margin-top:8px">${small(I.plus)} Write a version from scratch</button></div>
+        <div class="note info">Each new lead in ${esc(KINDS_PL[v.kind].toLowerCase())} gets one version. Change one big thing between versions so the result tells you something.</div>
+        <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary" disabled>Start test</button></div></form>`, { narrow: true });
+    const f = sheet.querySelector("form");
+    const sync = () => {
+      v.name = f.name.value; v.metric = f.metric.value;
+      v.ids = [...f.querySelectorAll("[name=ids]:checked")].map((i) => +i.value);
+      const go = f.querySelector(".primary");
+      go.disabled = v.ids.length < 2 || v.ids.length > 4;
+      go.textContent = v.ids.length > 4 ? "Four versions at most" : v.ids.length < 2 ? "Pick at least two versions" : `Start test with ${v.ids.length} versions`;
+    };
+    sync();
+    f.oninput = sync;
+    f.kind.onchange = () => { v.kind = f.kind.value; v.ids = []; sync(); this.newTest(); };
+    const writeVersion = (copy) => campaigns.editTpl(null, {
+      copy, segment: v.kind, step: 0,
+      onSaved: async (t) => { v.ids = [...v.ids, t.id].slice(-4); this.x = await api("/api/experiments"); this.newTest(); },
+    });
+    sheet.onclick = (e) => {
+      if (e.target.closest("[data-close]")) { closeModal(); return; }
+      const c = e.target.closest("[data-copy-tpl]");
+      if (c) { e.preventDefault(); sync(); writeVersion(this.x.templates.find((t) => t.id === +c.dataset.copyTpl)); return; }
+      if (e.target.closest("[data-blank-tpl]")) { sync(); writeVersion(null); }
+    };
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      sync();
+      const names = v.ids.map((id) => tpls.find((t) => t.id === id)?.name).filter(Boolean);
+      await busy(f.querySelector(".primary"), async () => {
+        await api("/api/experiments", { method: "POST", body: { name: v.name.trim() || names.join(" vs "), kind: v.kind, metric: v.metric, template_ids: v.ids } });
+        this.draft = null;
+        closeModal();
+        toast("Test started. New leads now get one version each.");
+        this.render();
+      });
+    };
+  },
+  stopTest(e) {
+    const r = e.results;
+    const lead = r.versions.find((v) => v.letter === r.leader);
+    const sure = r.verdict.state === "winner";
+    const sheet = openModal(`<div class="sheet-h"><h2>Stop “${esc(e.name)}”</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+      <form class="sheet-b">
+        <div class="note ${VERDICT[r.verdict.state]}">${esc(r.verdict.text)}</div>
+        <div class="ab-pick">${r.versions.map((v, i) => `<label class="ab-opt"><input type="radio" name="w" value="${v.template_id}" ${sure && v === lead ? "checked" : ""}><span class="ab-l" style="background:${AB_COL[i]}">${v.letter}</span><div style="min-width:0"><b>Keep ${esc(v.name)}</b><div class="small muted">${pct(v.rate)} · ${v.hits} of ${v.sent} · ${pct(v.chance_best)} chance best</div></div></label>`).join("")}
+          <label class="ab-opt"><input type="radio" name="w" value="" ${sure ? "" : "checked"}><span></span><div><b>No winner</b><div class="small muted">First emails go back to the usual best template for each lead.</div></div></label></div>
+        <label class="check"><input type="checkbox" class="chk" name="archive"> Archive the other versions</label>
+        <p class="small dim" style="margin:0">The version you keep becomes the first email for ${esc(KINDS_PL[e.kind].toLowerCase())} from now on (when it fits the lead). The results stay here.</p>
+        <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Stop test</button></div></form>`, { narrow: true });
+    sheet.onclick = (ev) => { if (ev.target.closest("[data-close]")) closeModal(); };
+    sheet.onsubmit = async (ev) => {
+      ev.preventDefault();
+      const f = ev.target, w = f.querySelector("[name=w]:checked")?.value;
+      await busy(f.querySelector(".primary"), async () => {
+        await api(`/api/experiments/${e.id}/stop`, { method: "POST", body: { winner_id: w ? +w : null, archive_losers: !!w && f.archive.checked } });
+        closeModal();
+        toast(w ? "Stopped. The version you kept is now the first email for this segment." : "Stopped. Results are kept under Finished.");
         this.render();
       });
     };

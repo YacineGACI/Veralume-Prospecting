@@ -245,11 +245,30 @@ class Message(Base):
     step: Mapped[int] = mapped_column(Integer, default=0)
     attach_photo_id: Mapped[int | None] = mapped_column(Integer)
     due_at: Mapped[str | None] = mapped_column(String(32), index=True)
+    experiment_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    edited: Mapped[bool | None] = mapped_column(Boolean)  # first email changed by hand
     sent_at: Mapped[str | None] = mapped_column(String(32), index=True)
     message_id: Mapped[str | None] = mapped_column(String(300), index=True)
     in_reply_to: Mapped[str | None] = mapped_column(String(300))
     error: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[str] = mapped_column(String(32), default=now)
+
+
+class Experiment(Base):
+    """An A/B test: the first emails to one segment are split at random between
+    two to four templates, and the reply (or interest) rate of each is compared."""
+
+    __tablename__ = "experiments"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160))
+    kind: Mapped[str] = mapped_column(String(32), index=True)
+    template_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    metric: Mapped[str] = mapped_column(String(12), default="reply")  # reply | interested
+    status: Mapped[str] = mapped_column(String(12), default="running")  # running | stopped
+    winner_id: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[str] = mapped_column(String(32), default=now)
+    ended_at: Mapped[str | None] = mapped_column(String(32))
 
 
 class Setting(Base):
