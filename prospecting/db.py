@@ -84,6 +84,8 @@ class Lead(Base):
     people: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     socials: Mapped[dict[str, str]] = mapped_column(JSON, default=dict)
     tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    # The user's own tags on this lead (ids of Label), unlike `tags`, which the collection sets.
+    labels: Mapped[list[int] | None] = mapped_column(JSON, default=list)
     sources: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     listings_seen: Mapped[int | None] = mapped_column(Integer)
     rating: Mapped[float | None] = mapped_column(Float)
@@ -290,6 +292,20 @@ class CampaignLead(Base):
     lead_id: Mapped[int] = mapped_column(Integer, index=True)
     template_id: Mapped[int | None] = mapped_column(Integer)
     rank: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String(32), default=now)
+
+
+LABEL_COLORS = ("gold", "violet", "teal", "blue", "red", "green", "pink", "grey")
+
+
+class Label(Base):
+    """A tag of the user's own (VIP, Met at the fair…), put on leads by hand."""
+
+    __tablename__ = "labels"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(60), unique=True)
+    color: Mapped[str] = mapped_column(String(12), default="blue")
     created_at: Mapped[str] = mapped_column(String(32), default=now)
 
 

@@ -304,3 +304,41 @@ def test_add_a_lead_by_hand_to_a_started_campaign(db):
     assert client.get(f"/api/leads/{spare}/campaigns").json()["items"][0]["inside"] is True
     again = client.post(f"/api/campaigns/{c['id']}/leads", json={"lead_ids": [spare]}).json()
     assert again["added"] == 0
+
+
+def test_labels_tag_filter_and_follow_leads(db):
+    a, b, c = leads(db, 3)
+    vip = client.post("/api/labels", json={"name": "  VIP  ", "color": "gold"}).json()
+    fair = client.post("/api/labels", json={"name": "Met at the fair", "color": "violet"}).json()
+    assert vip["name"] == "VIP"
+    assert client.post("/api/labels", json={"name": "VIP"}).status_code == 409
+    assert client.post("/api/labels", json={"name": "X", "color": "neon"}).status_code == 422
+    r = client.post("/api/leads/labels", json={"lead_ids": [a, b], "add": [vip["id"]]}).json()
+    assert r["changed"] == 2 and r["labels"][str(a)] == [vip["id"]]
+    client.post("/api/leads/labels", json={"lead_ids": [b], "add": [fair["id"]], "remove": [vip["id"]]})
+    counts = {x["name"]: x["n"] for x in client.get("/api/labels").json()["items"]}
+    assert counts == {"VIP": 1, "Met at the fair": 1}
+    listed = client.get("/api/leads", params={"label": vip["id"], "kind": "photographer"}).json()
+    assert [x["id"] for x in listed["items"]] == [a] and listed["items"][0]["labels"] == [vip["id"]]
+
+    def n(**f):
+        return client.post("/api/campaigns/audience", json={"kind": "photographer", "filters": f}).json()
+
+    assert n(labels_any=[vip["id"]])["matching"] == 1 and n(labels_none=[vip["id"], fair["id"]])["matching"] == 1
+    assert n()["facets"]["labels"] == {str(vip["id"]): 1, str(fair["id"]): 1}
+    client.patch(f"/api/labels/{vip['id']}", json={"name": "Très important", "color": "red"})
+    assert client.delete(f"/api/labels/{fair['id']}").json()["leads"] == 1
+    with db() as s:
+        assert s.get(Lead, b).labels == []
+
+
+def test_identity_says_who_a_lead_is(db):
+    (a,) = leads(db, 1, postcode="74700", city="Sallanches", tags=["sole_trader", "prestige", "rental"],
+                 founded="2020-05-14", socials={"instagram": "https://instagram.com/x"})  # fmt: skip
+    (b,) = leads(db, 1, kind="agency", network="Laforêt", headcount="02", postcode="67000")
+    ia = client.get(f"/api/leads/{a}").json()["id_"]
+    assert ia["dep_name"] == "Haute-Savoie" and ia["instagram"] is True
+    assert [x["t"] for x in ia["facts"]] == ["Solo", "Since 2020"]
+    assert [x["t"] for x in ia["specialties"]] == ["Luxury", "Rentals"]  # rarest first
+    ib = client.get(f"/api/leads/{b}").json()["id_"]
+    assert [x["t"] for x in ib["facts"]] == ["Laforêt", "3–5 staff"] and ib["dep_name"] == "Bas-Rhin"

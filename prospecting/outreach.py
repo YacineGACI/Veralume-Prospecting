@@ -34,6 +34,58 @@ def person(lead: Lead) -> str | None:
     return (lead.people or [{}])[0].get("name") or None
 
 
+# What a lead does, rarest first: the first two are what shows in lists.
+SPECIALTY_ORDER = ("prestige", "short_stay", "home_staging", "new_build", "drone", "virtual_tour", "commercial",
+                   "syndic", "management", "pro_photos", "rental", "transaction")  # fmt: skip
+SPECIALTY_LABEL = {
+    "prestige": "Luxury", "short_stay": "Holiday lets", "home_staging": "Home staging", "new_build": "New builds",
+    "drone": "Drone", "virtual_tour": "Virtual tours", "commercial": "Commercial", "syndic": "Building mgmt",
+    "management": "Property mgmt", "pro_photos": "Pro photos", "rental": "Rentals", "transaction": "Sales",
+}  # fmt: skip
+# INSEE headcount bands. NN: no employee.
+STAFF = {"00": "No staff", "01": "1–2 staff", "02": "3–5 staff", "03": "6–9 staff", "11": "10–19 staff",
+         "12": "20–49 staff", "21": "50–99 staff", "22": "100–199 staff", "31": "200+ staff"}  # fmt: skip
+MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "June", "July", "Aug", "Sept", "Oct", "Nov", "Dec")
+
+
+def identity(lead: Lead, se: set[str]) -> dict[str, Any]:
+    """What tells a lead apart at a glance: where it is, a few facts, what it does and
+    how it can be reached. Every value comes from what the collection found."""
+    from prospecting.places import departement
+    from prospecting.text import email_is_personal
+
+    tags = set(lead.tags or [])
+    facts: list[dict[str, str]] = []
+    if lead.network:
+        facts.append({"t": lead.network, "k": "network"})
+    elif lead.kind == "agency":
+        facts.append({"t": "Independent", "k": "plain"})
+    solo = "sole_trader" in tags or lead.headcount == "NN"
+    if solo and lead.kind != "agency":
+        facts.append({"t": "Solo", "k": "plain"})
+    elif lead.headcount in STAFF and lead.headcount != "00":
+        facts.append({"t": STAFF[lead.headcount], "k": "plain"})
+    founded = (lead.founded or "")[:10]
+    if len(founded) >= 7 and founded[:4].isdigit() and founded[5:7].isdigit():
+        y, m = int(founded[:4]), max(1, min(12, int(founded[5:7])))
+        today = local(now())
+        age = (today.year - y) * 12 + today.month - m
+        facts.append({"t": f"New · {MONTHS[m - 1]} {y}", "k": "new"} if age <= 24 else {"t": f"Since {y}", "k": "plain"})
+    elif "new_business" in tags:
+        facts.append({"t": "New business", "k": "new"})
+    elif "recent_profile" in tags:
+        facts.append({"t": "New profile", "k": "plain"})
+    _, name = departement(lead.postcode)
+    emails = usable_emails(lead, se)
+    return {
+        "dep_name": name,
+        "facts": facts,
+        "specialties": [{"tag": t, "t": SPECIALTY_LABEL[t]} for t in SPECIALTY_ORDER if t in tags],
+        "personal_email": any(email_is_personal(e) for e in emails),
+        "instagram": bool((lead.socials or {}).get("instagram")),
+    }
+
+
 def summary(lead: Lead, shared: tuple[set[str], set[str]] | None = None) -> dict[str, Any]:
     se, sp = shared or shared_contacts()
     return {
@@ -49,6 +101,7 @@ def summary(lead: Lead, shared: tuple[set[str], set[str]] | None = None) -> dict
         "last_contacted_at": lead.last_contacted_at, "next_action": lead.next_action,
         "next_action_at": lead.next_action_at, "snoozed_until": lead.snoozed_until,
         "updated_at": lead.updated_at, "pilot_stage": lead.pilot_stage, "pilot_due_at": lead.pilot_due_at,
+        "labels": list(lead.labels or []), "id_": identity(lead, se),
     }  # fmt: skip
 
 

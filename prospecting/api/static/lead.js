@@ -2,7 +2,7 @@
 // our retouched versions, the pilot's steps, notes), the email composer, and the review
 // dialog for written emails.
 import {
-  $, aiBar, api, at, av, busy, changed, closeModal, confetti, esc, fail, host, I, KIND, leanTxt,
+  $, aiBar, api, at, av, busy, changed, closeModal, confetti, esc, fail, host, I, idChips, KIND, LABELS, labelChip, labelEditor, leanTxt, loadLabels,
   lightbox, openModal, pill, safeUrl, small, SMALL_NEW, STAGES, STATUS, STEP, store, telHref,
   toast, toLocalInput, fromLocalInput, tomorrowAt, when, wireAiBar,
 } from "./core.js";
@@ -264,8 +264,11 @@ function renderLead() {
   const nRec = f.files.filter((x) => x.kind === "received").length;
   const tab = (k, label, n, key) => `<button role="tab" aria-selected="${drawer.tab === k}" data-tab="${k}" title="Key ${key}">${label}${n ? ` <span class="n">${n}</span>` : ""}</button>`;
   D().innerHTML = `<div class="dr-h">
-    <div class="row">${av(l)}<div style="flex:1;min-width:0"><h3>${esc(who(l))}</h3>
-      <div class="meta">${l.person ? `${esc(l.name)} · ` : ""}${esc(KIND[l.kind] || l.kind)} · ${esc(l.city || "town unknown")}${l.dep ? ` <span class="tag">${esc(l.dep)}</span>` : ""} ${pill(l.status)} ${l.do_not_contact ? `<span class="flag">do not contact</span>` : ""} ${sn}</div></div>
+    <div class="row">${av(l, "lg")}<div style="flex:1;min-width:0"><h3>${esc(who(l))}</h3>
+      <div class="meta">${l.person ? `${esc(l.name)} · ` : ""}${esc(KIND[l.kind] || l.kind)} · ${esc(l.city || "town unknown")}${l.dep ? ` <span class="tag">${esc(l.dep)}</span>` : ""}${l.id_?.dep_name ? ` ${esc(l.id_.dep_name)}` : ""}${l.distance_km != null ? ` · ${Math.round(l.distance_km)} km` : ""} ${pill(l.status)} ${l.do_not_contact ? `<span class="flag">do not contact</span>` : ""}</div>
+      <div class="idrow">${(l.labels || []).map((id) => LABELS.byId[id]).filter(Boolean).map((x) => `<button class="lab c-${esc(x.color)}" data-lab-off="${x.id}" aria-label="Remove the tag ${esc(x.name)}"><i></i>${esc(x.name)} ×</button>`).join("")}<button class="chip" data-lab-add style="padding:0 9px;font-size:12px">+ tag</button>
+        ${idChips(l, { max: 99 })}${sn ? ` ${sn}` : ""}</div>
+      <div class="labmenu" data-lab-menu hidden></div></div>
       <div class="acts-row">
         <button class="btn primary" data-email ${l.do_not_contact ? "disabled" : ""}>${I.mail} ${replied ? "Reply" : "Email"} <kbd>e</kbd></button>
         <button class="btn" data-call ${l.do_not_contact || !l.best_phone ? "disabled" : ""} title="${l.best_phone ? "" : "No phone that reaches them"}">${I.tel} Call <kbd>c</kbd></button>
@@ -381,6 +384,17 @@ D().addEventListener("click", async (e) => {
     else if (d.stage) await moveTo(d.stage);
     else if (d.advance !== undefined) await advance();
     else if (d.snooze !== undefined) { const m = D().querySelector("[data-snooze-menu]"); m.hidden = !m.hidden; }
+    else if (d.labAdd !== undefined) {
+      await loadLabels();
+      const m = D().querySelector("[data-lab-menu]");
+      const free = LABELS.items.filter((x) => !(l.labels || []).includes(x.id));
+      m.innerHTML = `<span class="small muted">Tag with</span>${free.map((x) => `<button class="lab c-${esc(x.color)}" data-lab-on="${x.id}"><i></i>${esc(x.name)}</button>`).join("")}<button class="chip" data-lab-new style="font-size:12px">+ New tag</button>`;
+      m.hidden = !m.hidden;
+    } else if (d.labNew !== undefined) {
+      labelEditor(null, async (r) => { await setLabels({ add: [r.id] }); });
+    } else if (d.labOn || d.labOff) {
+      await setLabels(d.labOn ? { add: [+d.labOn] } : { remove: [+d.labOff] });
+    }
     else if (d.toCamp !== undefined) {
       t.closest("details")?.removeAttribute("open");
       const m = D().querySelector("[data-camp-menu]");
@@ -408,6 +422,15 @@ D().addEventListener("click", async (e) => {
     else if (d.delAct) { await api(`/api/activities/${d.delAct}`, { method: "DELETE" }); await reload(); }
   } catch (err) { fail(err); }
 });
+
+async function setLabels({ add = [], remove = [] }) {
+  const l = drawer.lead;
+  const r = await api("/api/leads/labels", { method: "POST", body: { lead_ids: [l.id], add, remove } });
+  l.labels = r.labels[l.id] || [];
+  await loadLabels();
+  renderLead();
+  changed();
+}
 
 async function setPilot(body) {
   const l = drawer.lead, prev = l.pilot_stage;

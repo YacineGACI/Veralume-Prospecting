@@ -1,7 +1,7 @@
 // The views. Each one renders into the canvas and may handle its own keys.
 import {
   $, $$, aiBar, api, at, av, busy, changed, closeModal, confetti, dayName, esc, fail, firstName, I,
-  KINDS_PL, leanCol, leanTxt, openModal, pill, ring, scoreCls, small, SMALL_NEW, STAGES, STATUS,
+  idChips, kindIcon, KINDS_PL, LABELS, labelChip, labelChips, labelEditor, leanChip, leanCol, leanTxt, loadLabels, manageLabels, openModal, pill, ring, scoreCls, small, SMALL_NEW, STAGES, STATUS,
   STEP, store, telHref, toast, toLocalInput, fromLocalInput, tomorrowAt, when, wireAiBar,
 } from "./core.js";
 import { callLead, openComposer, openLead, openReview } from "./lead.js";
@@ -37,7 +37,7 @@ export const today = {
       : nW ? `${dayName()}. <em>${nW} ${nW > 1 ? "emails are" : "email is"}</em> written, ready for you.`
       : d.email + d.call === 0 ? `${dayName()}. Let's find your first <em>pilot customers</em>.`
       : `${dayName()}. <em>${d.email + d.call} touches</em> today. Keep going.`;
-    const q = (l, sub, acts, extra = "") => `<div class="qitem" data-open="${l.id}" ${extra}>${av(l)}<div style="min-width:0"><div class="t">${esc(l.person || l.name)}${l.person ? ` <span>· ${esc(l.name)}</span>` : ""}</div><div class="s">${sub}</div></div><div class="acts">${acts}</div></div>`;
+    const q = (l, sub, acts, extra = "", lean = false) => `<div class="qitem" data-open="${l.id}" ${extra}>${av(l)}<div style="min-width:0"><div class="t">${esc(l.person || l.name)}${l.person ? ` <span>· ${esc(l.name)}</span>` : ""}</div><div class="s">${sub}</div><div class="idrow">${labelChips(l)}${idChips(l)}${lean ? leanChip(l.lean_median) : ""}</div></div><div class="acts">${acts}</div></div>`;
     const days = t.week.map((w) => w.emails + w.calls > 0);
     const maxW = Math.max(10, ...t.week.map((w) => w.emails + w.calls));
     const f = t.funnel;
@@ -65,7 +65,7 @@ export const today = {
             ${t.actions.length ? `<div class="queue-group"><div class="qg-h"><b>Call-backs and reminders</b> ${t.actions.length}<span class="grow"></span>${t.actions.some((a) => a.next_action === "call") ? `<a class="btn sm" href="#call">${small(I.tel)} Start call mode</a>` : ""}</div>
               ${t.actions.map((l) => q(l, `${small(I.clock, 12)} ${l.next_action === "call" ? "Call them" : esc(l.next_action)} · ${esc(at(l.next_action_at))}`, l.next_action === "call" ? `<button class="btn sm" data-call="${l.id}">Call</button>` : `<button class="btn sm" data-done="${l.id}">${small(I.check)} Done</button>`)).join("")}</div>` : ""}
             <div class="queue-group"><div class="qg-h"><b>Fresh leads</b> · ${esc(KINDS_PL[t.segment].toLowerCase())} not contacted yet, new and small first<span class="grow"></span><span>${Math.max(g.email - d.email, 0)} emails left for today's goal</span></div>
-              ${t.fresh.length ? t.fresh.map((l) => q(l, `${esc(l.city || "town unknown")} · score ${l.score} · ${l.lean_median != null ? "lean " + leanTxt(l.lean_median) : "photos not measured"}${l.small_new.length ? ` · <span class="newb">${esc(SMALL_NEW[l.small_new[0]] || l.small_new[0])}</span>` : ""}`, `<button class="btn sm primary" data-email="${l.id}">Email</button><button class="btn sm" data-skip="${l.id}" title="Hide until tomorrow">Skip</button>`)).join("")
+              ${t.fresh.length ? t.fresh.map((l) => q(l, `${esc(l.city || "town unknown")}${l.dep ? ` ${esc(l.dep)}` : ""} · score ${l.score}${l.lean_median == null ? " · photos not measured" : ""}`, `<button class="btn sm primary" data-email="${l.id}">Email</button><button class="btn sm" data-skip="${l.id}" title="Hide until tomorrow">Skip</button>`, "", true)).join("")
                 : `<p class="empty">No ${esc(KINDS_PL[t.segment].toLowerCase())} left with a usable email. Switch segment, or open Leads to find their addresses.</p>`}</div>
           </section>
         </div>
@@ -127,6 +127,7 @@ export const leads = {
     if (q.min_lean) p.set("min_lean", "3");
     if (q.needs_check) p.set("needs_check", "true");
     if (q.dep) p.set("dep", q.dep);
+    if (q.label) p.set("label", q.label);
     return p;
   },
   async load(more = false) {
@@ -136,7 +137,8 @@ export const leads = {
   },
   async render() {
     store.set("leadsQ", this.qs);
-    const [meta] = await Promise.all([this.meta || api("/api/meta"), this.load()]);
+    const [meta] = await Promise.all([this.meta || api("/api/meta"), this.load(), loadLabels()]);
+    if (this.qs.label && !LABELS.byId[this.qs.label]) { this.qs.label = null; await this.load(); }
     this.meta = meta;
     this.draw();
   },
@@ -148,7 +150,10 @@ export const leads = {
       <div class="topline"><h1>Leads</h1><span class="sub">${m.total.toLocaleString("en")} in the database</span><span class="grow"></span>
         <label class="search">${small(I.search, 15)}<input id="lq" type="search" placeholder="Name, town, postcode, website, notes" value="${esc(q.q)}" aria-label="Search leads"><kbd>/</kbd></label>
         <button class="btn" data-add>${small(I.plus)} Lead</button></div>
-      <div class="segs">${SEGS.map((k) => `<button aria-pressed="${q.kind === k}" data-kind="${k}">${KINDS_PL[k]} <b>${(m.by_kind[k]?.total || 0).toLocaleString("en")}</b></button>`).join("")}</div>
+      <div class="segs">${SEGS.map((k) => `<button aria-pressed="${q.kind === k}" data-kind="${k}">${kindIcon(k, 15)} ${KINDS_PL[k]} <b>${(m.by_kind[k]?.total || 0).toLocaleString("en")}</b></button>`).join("")}</div>
+      <div class="labbar"><span class="lbl">Your tags</span>
+        ${LABELS.items.map((x) => `<button class="lab c-${esc(x.color)}" data-label="${x.id}" aria-pressed="${q.label === x.id}" title="Show only leads tagged ${esc(x.name)}"><i></i>${esc(x.name)} <span class="mono small">${x.n}</span></button>`).join("")}
+        <button class="chip" data-new-label>+ New tag</button>${LABELS.items.length ? `<button class="linkish small" data-manage-labels>Rename or delete</button>` : `<span class="small dim">e.g. VIP, Met at the fair, Call first. Tag leads from their file or several at once here.</span>`}</div>
       <div class="chips">
         ${chip("email", `Has their email · ${reachN.email}`, q.reach === "email")}${chip("phone", `Has their phone · ${reachN.phone}`, q.reach === "phone")}
         ${chip("not", "Not contacted", q.contacted === "no")}${chip("yes", "Contacted", q.contacted === "yes")}
@@ -176,8 +181,9 @@ export const leads = {
     return `<tr data-open="${l.id}" class="${this.sel.has(l.id) ? "sel" : ""}">
       <td><input type="checkbox" class="chk" data-sel="${l.id}" ${this.sel.has(l.id) ? "checked" : ""} aria-label="Select ${esc(l.name)}"></td>
       <td><span class="score ${scoreCls(l.score)}">${l.score}</span></td>
-      <td class="who"><b>${esc(l.person || l.name)}</b>${l.person ? `<span>${esc(l.name)}</span>` : ""}${l.small_new.length ? ` <span class="newb">${esc(SMALL_NEW[l.small_new[0]] || l.small_new[0])}</span>` : ""}${l.flags.map((f) => ` <span class="flag">${esc(f)}</span>`).join("")}</td>
-      <td>${esc(l.city || "–")} ${l.dep ? `<span class="tag">${esc(l.dep)}</span>` : ""}</td>
+      <td class="who"><div class="row" style="gap:12px;flex-wrap:nowrap;align-items:flex-start">${av(l)}<div style="min-width:0"><b>${esc(l.person || l.name)}</b>${l.person ? `<span class="bn">${esc(l.name)}</span>` : ""}
+        <div class="idrow">${labelChips(l)}${idChips(l)}${l.flags.map((f) => `<span class="flag">${esc(f)}</span>`).join("")}</div></div></div></td>
+      <td>${esc(l.city || "–")} ${l.dep ? `<span class="tag">${esc(l.dep)}</span>` : ""}${l.id_?.dep_name ? `<div class="small muted">${esc(l.id_.dep_name)}${l.distance_km != null && l.distance_km < 60 ? ` · ${Math.round(l.distance_km)} km` : ""}</div>` : ""}</td>
       <td><span class="ci"><span class="${mail}" title="${mail === "y" ? "Their email" : mail === "x" ? "Email found, but not theirs" : "No email"}">${I.mail}</span><span class="${tel}" title="${tel === "y" ? "Their phone" : tel === "x" ? "Phone found, but a switchboard" : "No phone"}">${I.tel}</span><span class="${l.website ? "y" : ""}" title="${l.website ? "Website" : "No website"}">${I.web}</span></span></td>
       <td><span class="leanbar"><span class="tr"><span style="width:${l.lean_median == null ? 0 : Math.min((l.lean_median / 8) * 100, 100)}%;background:${leanCol(l.lean_median)}"></span></span><span class="num small">${leanTxt(l.lean_median)}</span></span></td>
       <td>${pill(l.status)}</td>
@@ -189,10 +195,20 @@ export const leads = {
       <button class="btn sm" data-bulk="call">${small(I.tel)} Add to call queue</button>
       <button class="btn sm" data-bulk="contacted">${small(I.check)} Mark contacted</button>
       <select data-bulk-status aria-label="Move to stage"><option value="">Move to…</option>${[...STAGES, "lost"].map((s) => `<option value="${s}">${STATUS[s]}</option>`).join("")}</select>
+      ${LABELS.items.length ? `<select data-bulk-label aria-label="Tag the selected leads"><option value="">Tag…</option>${LABELS.items.map((x) => `<option value="+${x.id}">Add “${esc(x.name)}”</option>`).join("")}${LABELS.items.map((x) => `<option value="-${x.id}">Remove “${esc(x.name)}”</option>`).join("")}</select>` : ""}
       <button class="btn sm" data-bulk="dnc">Do not contact</button>
       <button class="btn sm" data-clear aria-label="Clear selection">${small(I.x)}</button></div>` : "";
     const s = $("[data-bulk-status]");
     if (s) s.onchange = () => s.value && this.doBulk("status", s.value);
+    const lb = $("[data-bulk-label]");
+    if (lb) lb.onchange = async () => {
+      if (!lb.value) return;
+      const id = +lb.value.slice(1), add = lb.value[0] === "+", ids = [...this.sel];
+      await api("/api/leads/labels", { method: "POST", body: { lead_ids: ids, add: add ? [id] : [], remove: add ? [] : [id] } }).catch(fail);
+      toast(`${add ? "Tagged" : "Untagged"} ${ids.length} lead${ids.length > 1 ? "s" : ""} “${LABELS.byId[id]?.name}”`);
+      this.sel.clear();
+      this.render();
+    };
   },
   async doBulk(action, value = null, btn = null) {
     const ids = [...this.sel];
@@ -211,6 +227,9 @@ export const leads = {
     const d = t.dataset;
     if (d.sel) { const id = +d.sel; this.sel.has(id) ? this.sel.delete(id) : this.sel.add(id); t.closest("tr").classList.toggle("sel", this.sel.has(id)); return this.bulk(); }
     if (d.kind) { this.qs.kind = d.kind; this.qs.small_first = d.kind === "photographer"; this.sel.clear(); return this.render(); }
+    if (d.label) { this.qs.label = this.qs.label === +d.label ? null : +d.label; return this.render(); }
+    if (d.newLabel !== undefined) return labelEditor(null, () => this.render());
+    if (d.manageLabels !== undefined) return manageLabels(() => this.render());
     if (d.chip) {
       const q = this.qs, k = d.chip;
       if (k === "email" || k === "phone") q.reach = q.reach === k ? "" : k;
@@ -385,7 +404,7 @@ export const pipeline = {
         const n = cnt[s] || 0;
         const conv = i >= 2 && i < STAGES.length && reached(i - 1) ? Math.round((reached(i) / reached(i - 1)) * 100) : null;
         return `<div class="col" data-col="${s}"><div class="col-h">${pill(s)} <span class="n">${n.toLocaleString("en")}</span>${conv != null ? `<span class="conv" title="Share of the previous stage that got this far">${conv}%</span>` : ""}</div>
-          ${p.columns[s].map((l) => `<div class="kc" draggable="true" data-card="${l.id}" data-from="${s}" data-open="${l.id}"><b>${esc(l.person || l.name)}</b>${l.person ? `<div class="m">${esc(l.name)}</div>` : ""}<div class="m"><span class="score ${scoreCls(l.score)}" style="width:30px;height:20px;font-size:11px">${l.score}</span><span>${esc(l.city || "")}</span><span class="grow"></span><span>${esc(when(l.last_contacted_at))}</span></div></div>`).join("")}
+          ${p.columns[s].map((l) => `<div class="kc k-${esc(l.kind)}" draggable="true" data-card="${l.id}" data-from="${s}" data-open="${l.id}"><b>${kindIcon(l.kind)} ${esc(l.person || l.name)}</b>${l.person ? `<div class="m">${esc(l.name)}</div>` : ""}${(l.labels || []).length || l.id_ ? `<div class="idrow">${labelChips(l)}${idChips(l, { max: 1, facts: false })}</div>` : ""}<div class="m"><span class="score ${scoreCls(l.score)}" style="width:30px;height:20px;font-size:11px">${l.score}</span><span>${esc(l.city || "")}</span><span class="grow"></span><span>${esc(when(l.last_contacted_at))}</span></div></div>`).join("")}
           ${s === "new" && n > p.columns.new.length ? `<a class="small dim" href="#leads" style="padding:4px">+ ${(n - p.columns.new.length).toLocaleString("en")} more in Leads</a>` : ""}
           ${!p.columns[s].length && s !== "new" ? `<p class="small dim" style="padding:4px;margin:0">Nobody here yet.</p>` : ""}</div>`;
       }).join("")}</div></div>`;

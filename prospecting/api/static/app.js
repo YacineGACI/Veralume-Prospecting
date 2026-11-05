@@ -1,5 +1,5 @@
 // Veralume Prospects: router, search palette, keyboard, refresh. No build step.
-import { $, $$, api, av, bus, closeModal, esc, fail, KIND, modalOpen, pill } from "./core.js";
+import { $, $$, api, av, bus, closeModal, esc, fail, KIND, loadLabels, modalOpen, pill } from "./core.js";
 import { closeLead, drawer, leadKey, openLead } from "./lead.js";
 import { campaignsView, campaignView, dossiersView } from "./campaigns.js";
 import { applyTheme, calls, insights, leads, pilots, pipeline, settingsView, today, ui } from "./views.js";
@@ -129,4 +129,4 @@ setInterval(() => {
 
 addEventListener("hashchange", () => { closeLead(); closeModal(); closePal(); route(); });
 applyTheme();
-route().catch(fail);
+loadLabels().finally(() => route().catch(fail));

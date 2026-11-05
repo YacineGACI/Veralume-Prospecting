@@ -38,7 +38,84 @@ export const leanCol = (v) => (v == null ? "var(--line2)" : v >= 3 ? "var(--bad)
 export const scoreCls = (s) => (s >= 80 ? "hi" : s >= 50 ? "mid" : "lo");
 export const pill = (s) => `<span class="pill st-${esc(s)}">${esc(STATUS[s] || s)}</span>`;
 const initials = (n) => String(n || "?").split(/[\s'.·-]+/).filter((w) => /\p{L}/u.test(w[0] || "")).slice(0, 2).map((w) => w[0]).join("").toUpperCase() || "?";
-export const av = (l) => `<span class="avatar ${esc(l.kind)}" aria-hidden="true">${esc(initials(l.person || l.name))}</span>`;
+// The kind of lead, as an icon: a camera, a shop front, a key. With the avatar's shape (a
+// circle for a person, a rounded square for an agency) it reads without colour.
+const KIND_SVG = {
+  photographer: `<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>`,
+  agency: `<path d="M4 10l1.5-5h13L20 10M5 10v9h14v-9M4 10h16M10 19v-5h4v5"/>`,
+  independent_agent: `<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l2 2M14 9l2 2"/>`,
+};
+export const kindIcon = (k, size = 14) => KIND_SVG[k]
+  ? `<svg class="ki k-${k}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" role="img" aria-label="${esc(KIND[k])}">${KIND_SVG[k]}</svg>` : "";
+export const av = (l, cls = "") => `<span class="avatar k-${esc(l.kind)} ${cls}" aria-hidden="true">${esc(initials(l.person || l.name))}${KIND_SVG[l.kind] ? `<span class="kb"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">${KIND_SVG[l.kind]}</svg></span>` : ""}</span>`;
+
+// The user's own tags, loaded once and refreshed when they change.
+export const LABELS = { items: [], byId: {}, colors: [] };
+export async function loadLabels() {
+  try {
+    const r = await api("/api/labels");
+    Object.assign(LABELS, { items: r.items, colors: r.colors, byId: Object.fromEntries(r.items.map((x) => [x.id, x])) });
+  } catch {}
+  return LABELS;
+}
+export const labelChip = (x, extra = "") => `<span class="lab c-${esc(x.color)}"${extra}><i></i>${esc(x.name)}</span>`;
+export const labelChips = (l) => (l.labels || []).map((id) => LABELS.byId[id]).filter(Boolean).map((x) => labelChip(x)).join("");
+
+/** What a lead is, as small chips: facts in grey (network, size, how new), then what they
+ * do in colour, at most `max` of those (rarest first). */
+export function idChips(l, { max = 2, facts = true } = {}) {
+  const id = l.id_ || {};
+  const f = facts ? (id.facts || []).map((x) => `<span class="idc ${x.k === "network" ? "net" : x.k === "new" ? "new" : ""}">${esc(x.t)}</span>`) : [];
+  const sp = (id.specialties || []).slice(0, max).map((x) => `<span class="idc sp sp-${esc(x.tag)}">${esc(x.t)}</span>`);
+  return [...f, ...sp].join("");
+}
+/** Create or edit one of the user's tags: a name and a colour. */
+export function labelEditor(lab, onDone) {
+  let color = lab?.color || LABELS.colors[(LABELS.items.length + 3) % Math.max(LABELS.colors.length, 1)] || "blue";
+  const sheet = openModal(`<div class="sheet-h"><h2>${lab ? "Edit the tag" : "New tag"}</h2><button class="btn ghost sm" data-close aria-label="Close">✕</button></div>
+    <form class="sheet-b"><label>Name<input class="input" name="name" value="${esc(lab?.name || "")}" maxlength="60" placeholder="e.g. VIP, Met at the fair, Call first" autofocus required></label>
+    <div><div class="small muted" style="margin-bottom:6px">Colour</div><div class="swatches">${LABELS.colors.map((c) => `<button type="button" class="c-${c}" data-color="${c}" aria-label="${c}" aria-pressed="${c === color}"></button>`).join("")}</div></div>
+    <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">${lab ? "Save" : "Create tag"}</button></div></form>`, { narrow: true });
+  sheet.onclick = (e) => {
+    if (e.target.closest("[data-close]")) return closeModal();
+    const b = e.target.closest("[data-color]");
+    if (b) { color = b.dataset.color; sheet.querySelectorAll("[data-color]").forEach((x) => x.setAttribute("aria-pressed", x === b)); }
+  };
+  sheet.onsubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const body = { name: e.target.name.value, color };
+      const r = await api(lab ? `/api/labels/${lab.id}` : "/api/labels", { method: lab ? "PATCH" : "POST", body });
+      await loadLabels();
+      closeModal();
+      toast(lab ? "Tag saved" : `Tag “${r.name}” created`);
+      onDone?.(r);
+    } catch (err) { toast(err.message, { err: true }); }
+  };
+}
+
+/** The list of the user's tags, to rename, recolour or delete. */
+export function manageLabels(onDone) {
+  const draw = () => `<div class="sheet-h"><h2>Your tags</h2><button class="btn ghost sm" data-close aria-label="Close">✕</button></div>
+    <div class="sheet-b">${LABELS.items.map((x) => `<div class="row" style="gap:10px">${labelChip(x)}<span class="small muted">${x.n} lead${x.n === 1 ? "" : "s"}</span><span class="grow"></span>
+      <button class="btn sm" data-edit="${x.id}">Rename or recolour</button><button class="btn sm ghost danger" data-del="${x.id}">Delete</button></div>`).join("") || `<p class="muted">No tags yet.</p>`}</div>`;
+  const sheet = openModal(draw(), { narrow: true });
+  sheet.onclick = async (e) => {
+    if (e.target.closest("[data-close]")) { closeModal(); return onDone?.(); }
+    const ed = e.target.closest("[data-edit]"), del = e.target.closest("[data-del]");
+    if (ed) return labelEditor(LABELS.byId[+ed.dataset.edit], onDone);
+    if (del) {
+      const x = LABELS.byId[+del.dataset.del];
+      if (del.dataset.confirm !== "1") { del.dataset.confirm = "1"; del.textContent = x.n ? `Delete, untag ${x.n}` : "Click again to delete"; return; }
+      await api(`/api/labels/${x.id}`, { method: "DELETE" });
+      await loadLabels();
+      sheet.innerHTML = draw();
+      toast(`Tag “${x.name}” deleted`);
+    }
+  };
+}
+
+export const leanChip = (v) => (v == null ? "" : `<span class="leanc ${v >= 3 ? "hi" : v >= 1.5 ? "mid" : "lo"}" title="How much their photos lean">${leanTxt(v)}</span>`);
 export const who = (l) => l.person || l.name;
 export const firstName = (l) => {
   const p = (l.person || "").split(/\s+/);

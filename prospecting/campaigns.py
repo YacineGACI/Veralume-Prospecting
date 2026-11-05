@@ -110,6 +110,7 @@ def facets(s: Session, leads: list[Lead]) -> dict[str, Any]:
         "tags": [{"tag": t, "label": SPECIALTIES[t], "n": n} for t, n in tags.most_common()],
         "socials": {k: soc.get(k, 0) for k in SOCIALS},
         "networks": [{"name": k, "n": n} for k, n in nets.most_common(20)],
+        "labels": dict(Counter(x for l in leads for x in set(l.labels or []))),
     }  # fmt: skip
 
 
@@ -160,6 +161,11 @@ def _matches(lead: Lead, f: dict[str, Any], se: set[str], sp: set[str]) -> bool:
     if f.get("tags_any") and not (set(f["tags_any"]) & tags):
         return False
     if f.get("tags_none") and set(f["tags_none"]) & tags:
+        return False
+    mine = set(lead.labels or [])
+    if f.get("labels_any") and not (set(f["labels_any"]) & mine):
+        return False
+    if f.get("labels_none") and set(f["labels_none"]) & mine:
         return False
     if f.get("network") == "independent" and lead.network:
         return False

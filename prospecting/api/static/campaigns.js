@@ -1,7 +1,7 @@
 // Campaigns: the list, one campaign (a three-step builder while it's a draft, its results
 // once started) and dossiers (reusable sets of images).
 import {
-  $, aiBar, api, busy, changed, closeModal, confetti, esc, fail, I, KINDS_PL, openModal,
+  $, aiBar, api, busy, changed, closeModal, confetti, esc, fail, I, idChips, kindIcon, KINDS_PL, LABELS, labelChips, openModal,
   small, toast, when, wireAiBar,
 } from "./core.js";
 import { openLead } from "./lead.js";
@@ -176,7 +176,6 @@ function drawStep() {
 // Filters live in c.filters (see campaigns.candidates). Chips show, from the facet counts,
 // how many of the current matches each one would keep.
 
-const SMALL_LABEL = { new_business: "new business", sole_trader: "sole trader", recent_profile: "recent profile", few_reviews: "few reviews", social_only: "social only" };
 const NAMES = {
   first_name: "first name known", email_personal: "a person's email", phone: "a phone to call",
   small: "small or new", solo: "works alone", measured: "photos measured", shortlisted: "shortlisted by you",
@@ -216,6 +215,8 @@ function activeFilters(f) {
   (f.socials || []).forEach((s) => out.push([`on ${s[0].toUpperCase() + s.slice(1)}`, "socials", s]));
   (f.tags_any || []).forEach((t) => out.push([`does ${tagName(t)}`, "tags_any", t]));
   (f.tags_none || []).forEach((t) => out.push([`not ${tagName(t)}`, "tags_none", t]));
+  (f.labels_any || []).forEach((id) => out.push([`tagged ${LABELS.byId[id]?.name || "?"}`, "labels_any", id]));
+  (f.labels_none || []).forEach((id) => out.push([`not tagged ${LABELS.byId[id]?.name || "?"}`, "labels_none", id]));
   (f.deps || []).forEach((d) => out.push([`in ${d}`, "deps", d]));
   (f.networks || []).forEach((n) => out.push([n, "networks", n]));
   if (f.network === "independent") out.push(["independent (no network)", "network"]);
@@ -296,6 +297,11 @@ function stepWho() {
 
       ${allTags.length ? `<details class="fgrp" open><summary>What they do ${sub("once: only them · twice: leave them out")}</summary><div class="chips">${allTags.map(tagChip).join("")}</div></details>` : ""}
 
+      ${LABELS.items.length ? `<details class="fgrp" open><summary>Your tags ${sub("once: only them · twice: leave them out")}</summary><div class="chips">${LABELS.items.map((x) => {
+        const st = (f.labels_any || []).includes(x.id) ? "any" : (f.labels_none || []).includes(x.id) ? "none" : "";
+        return `<button class="lab c-${esc(x.color)}" type="button" data-flab="${x.id}" aria-pressed="${!!st}">${st === "any" ? "✓ " : st === "none" ? "✕ " : "<i></i>"}${st === "none" ? "not " : ""}${esc(x.name)}${st ? "" : n0(fa.labels?.[x.id] || 0)}</button>`;
+      }).join("")}</div></details>` : ""}
+
       <details class="fgrp" open><summary>Their photos and score</summary><div class="chips">
         ${chip("photos measured", `data-fb="measured"`, f.measured, fa.measured)}
         ${[0.5, 1, 2, 3].map((v) => choice("lean_min", v, `lean ${String(v).replace(".", ",")}°+`, f, fa.lean?.[v])).join("")}
@@ -330,10 +336,10 @@ function stepWho() {
     <div class="cb-sec"><h4>Who will get it ${sub("in sending order · untick anyone to leave them out")}</h4>
       ${!a ? `<p class="muted small">Counting…</p>` : !list.length ? `<div class="note warn">No lead matches. Remove a filter above, or add someone by hand.</div>`
         : `<div class="cb-list cb-who">${list.map((l, i) => `<label class="cb-row"><input type="checkbox" class="chk" data-keep="${l.id}" ${l.by_hand ? `data-byhand="1"` : ""} checked aria-label="Keep ${esc(l.person || l.name)}">
-            <span class="nm"><span class="dim mono small">${i + 1}</span> <b>${esc(l.person || l.name)}</b>${l.person ? ` <span class="muted">· ${esc(l.name)}</span>` : ""}${l.by_hand ? ` <span class="pill st-pilot">by hand</span>` : ""}</span>
+            <span class="nm"><span class="dim mono small">${i + 1}</span> ${kindIcon(l.kind)} <b>${esc(l.person || l.name)}</b>${l.person ? ` <span class="muted">· ${esc(l.name)}</span>` : ""}${l.by_hand ? ` <span class="pill st-pilot">by hand</span>` : ""}</span>
             <span class="muted">${esc(l.city || "")}${l.dep ? ` (${esc(l.dep)})` : ""}</span>
             <span class="mono small">${l.lean_median != null ? `${l.lean_median.toFixed(1).replace(".", ",")}°` : ""}</span>
-            <span class="small tagline">${[...(l.small_new || []).slice(0, 1).map((t) => SMALL_LABEL[t] || t), ...(l.specialties || [])].map((t) => `<span>${esc(t)}</span>`).join("")}${l.phone_ok ? `<span title="Has a phone">☎</span>` : ""}</span>
+            <span class="small tagline">${labelChips(l)}${idChips(l, { max: 2 })}${l.phone_ok ? `<span title="Has a phone">☎</span>` : ""}</span>
             <button class="linkish small" data-peek="${l.id}" type="button">open</button></label>`).join("")}</div>
           ${a.chosen > list.length ? `<p class="small muted" style="margin:8px 0 0">Showing ${list.length} of ${a.chosen}. <button class="linkish small" type="button" data-more-list>Show ${Math.min(50, a.chosen - list.length)} more</button> · <button class="linkish small" type="button" data-all-list>show all</button></p>` : ""}`}
       ${a?.excluded.length ? `<p class="small muted" style="margin:8px 0 0">Left out by you: ${a.excluded.map((l) => `${esc(l.person || l.name)} <button class="linkish small" data-unexclude="${l.id}">put back</button>`).join(" · ")}</p>` : ""}</div>`;
@@ -529,7 +535,7 @@ async function onBuilderClick(e) {
     return;
   }
   const toggleIn = (key, val) => { const s = new Set(f[key] || []); s.has(val) ? s.delete(val) : s.add(val); f[key] = s.size ? [...s] : undefined; };
-  const WHO = ["kind", "dep", "order", "unexclude", "fb", "fset", "flist", "ftag", "fdel", "fclear", "preset", "hand", "unhand", "moreList", "allList"];
+  const WHO = ["kind", "dep", "order", "unexclude", "fb", "fset", "flist", "ftag", "flab", "fdel", "fclear", "preset", "hand", "unhand", "moreList", "allList"];
   if (d.kind) { c.kind = d.kind; c.filters = {}; B.depOptions = []; c.excluded = []; }
   else if (d.preset) { Object.assign(f, structuredClone((PRESETS[c.kind] || [])[+d.preset][1])); }
   else if (d.fb) f[d.fb] = f[d.fb] ? undefined : true;
@@ -538,6 +544,10 @@ async function onBuilderClick(e) {
   else if (d.ftag) {
     const t0 = d.ftag, inAny = (f.tags_any || []).includes(t0), inNone = (f.tags_none || []).includes(t0);
     if (inAny) { toggleIn("tags_any", t0); toggleIn("tags_none", t0); } else if (inNone) toggleIn("tags_none", t0); else toggleIn("tags_any", t0);
+  } else if (d.flab) {
+    const id = +d.flab, inAny = (f.labels_any || []).includes(id), inNone = (f.labels_none || []).includes(id);
+    const tog = (key) => { const s = new Set(f[key] || []); s.has(id) ? s.delete(id) : s.add(id); f[key] = s.size ? [...s] : undefined; };
+    if (inAny) { tog("labels_any"); tog("labels_none"); } else if (inNone) tog("labels_none"); else tog("labels_any");
   } else if (d.fdel) {
     if (d.fval !== undefined && Array.isArray(f[d.fdel])) toggleIn(d.fdel, d.fval); else f[d.fdel] = undefined;
   } else if (d.fclear !== undefined) c.filters = {};

@@ -16,6 +16,7 @@ from sqlalchemy import func, or_, select
 from prospecting import enrich, mailer, pilot, scoring, screen, worker
 from prospecting.api.experiments import router as experiments_router
 from prospecting.api.campaigns import router as campaigns_router
+from prospecting.api.labels import router as labels_router
 from prospecting.api.pilot import router as pilot_router
 from prospecting.api.outreach import router as outreach_router
 from prospecting.api.writer import router as writer_router
@@ -55,6 +56,7 @@ app.include_router(experiments_router)
 app.include_router(writer_router)
 app.include_router(pilot_router)
 app.include_router(campaigns_router)
+app.include_router(labels_router)
 
 
 def _get(s, lead_id: int) -> Lead:
@@ -151,7 +153,7 @@ SORTS = {
 def leads(
     q: str = "", kind: str = "", status: str = "", city: str = "", dep: str = "",
     reach: str = "", contacted: str = "", measured: bool = False, min_lean: float | None = None,
-    needs_check: bool = False, small_first: bool = False, hide_dnc: bool = True,
+    needs_check: bool = False, small_first: bool = False, hide_dnc: bool = True, label: int | None = None,
     sort: str = "score", offset: int = 0, limit: int = 100,
 ) -> dict[str, Any]:  # fmt: skip
     shared = shared_contacts()
@@ -194,6 +196,8 @@ def leads(
             rows = [l for l in rows if not usable_emails(l, se) and not usable_phones(l, sp)]
         if needs_check:
             rows = [l for l in rows if flags(l, se, sp)]
+        if label is not None:
+            rows = [l for l in rows if label in (l.labels or [])]
         if small_first:  # stable sort: keeps the chosen order inside each group
             rows.sort(key=lambda l: not (SMALL_NEW & set(l.tags or [])))
         return {

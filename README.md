@@ -44,7 +44,9 @@ cp .env.example .env                     # then fill it in (below)
 ```
 
 **The database** is PostgreSQL in Docker, on port 5433, reachable from this computer
-only. Create it once, with a password of your choice:
+only. It is its own container, so it runs alongside the Veralume app's database (port
+55432) and the app (port 8011) alongside the Veralume studio (port 8010). Create it once,
+with a password of your choice:
 
 ```bash
 PW=$(python3 -c "import secrets; print(secrets.token_urlsafe(24))")
