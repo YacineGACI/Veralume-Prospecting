@@ -118,10 +118,24 @@ data is personal data, so keep only what you use.
 
 ## Data
 
-`data/prospecting.db` (SQLite: leads, photos, activities, search_queries),
-`data/photos/<lead>/`, `data/cache/`. Settings: `prospecting/config.py`, overridable with
-`PROSPECT_*` variables (area centre and radius, politeness, photos per lead).
+The database is **PostgreSQL**, running in Docker on this computer (container
+`veralume-prospecting-db`, data in the Docker volume `veralume-prospecting-pg`, port 5433,
+reachable from this machine only). `PROSPECT_DATABASE_URL` in `.env` points to it; without
+it the app falls back to a SQLite file, `data/prospecting.db`.
 
 ```bash
-uv run pytest
+docker start veralume-prospecting-db          # if Docker was restarted without it
+docker exec veralume-prospecting-db pg_dump -U prospect -Fc prospecting > backup-$(date +%F).dump
+docker exec -i veralume-prospecting-db pg_restore -U prospect -d prospecting --clean < backup-2026-11-05.dump
+```
+
+Files: `data/assets/` (image library), `data/leadfiles/<lead>/` (photos leads send and your
+retouched versions), `data/outbox/` (test-mode emails). Website photos (`data/photos/`) and
+the page cache (`data/cache/`) are downloaded again when `screen` / `enrich` run; their
+measurements stay in the database either way. Settings: `prospecting/config.py`,
+overridable with `PROSPECT_*` variables.
+
+```bash
+uv run pytest                                  # on a throwaway SQLite database
+PROSPECT_TEST_DATABASE_URL=postgresql+psycopg://…/prospecting_test uv run pytest
 ```

@@ -192,7 +192,8 @@ def pick_template(s: Session, lead: Lead, step: int = 0) -> Template | None:
         if t is not None and not t.archived and t.step == 0 and fits_lead(t, lead):
             return t
     rows = list(
-        s.scalars(select(Template).where(Template.step == step, Template.archived.is_(False)))
+        s.scalars(select(Template).where(Template.step == step, Template.archived.is_(False))
+                  .order_by(Template.id))
     )
     rows = [t for t in rows if t.key != "after_voicemail"]
     if lead.lean_median is None:  # never claim their photos are straight without measuring

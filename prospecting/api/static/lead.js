@@ -198,6 +198,9 @@ function notesTab(l) {
 // --- side panel -------------------------------------------------------------------------
 
 function photosSec(l) {
+  if (!l.photos.length && l.lean_median != null) {
+    return `<div class="sec"><h4>Their website photos</h4><p class="small" style="margin:0">Verticals lean <b>${leanTxt(l.lean_median)}</b> on average, measured on ${l.photos_measured ? `${l.photos_measured} photo${l.photos_measured > 1 ? "s" : ""}` : "their photos"}. The photos themselves weren't kept.</p></div>`;
+  }
   if (!l.photos.length) {
     const q = encodeURIComponent(`${l.name} ${l.city || ""}`);
     return `<div class="sec"><h4>Their website photos</h4>

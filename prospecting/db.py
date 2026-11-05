@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import JSON, Boolean, Float, ForeignKey, Integer, String, Text, create_engine, inspect
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, relationship
 
 from prospecting.config import settings
@@ -155,8 +155,8 @@ class Photo(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
-    url: Mapped[str] = mapped_column(String(1000))
-    page_url: Mapped[str | None] = mapped_column(String(1000))
+    url: Mapped[str] = mapped_column(Text)
+    page_url: Mapped[str | None] = mapped_column(Text)
     path: Mapped[str | None] = mapped_column(String(300))
     width: Mapped[int | None] = mapped_column(Integer)
     height: Mapped[int | None] = mapped_column(Integer)
@@ -319,17 +319,24 @@ class Setting(Base):
 
 
 settings.data_dir.mkdir(parents=True, exist_ok=True)
-engine = create_engine(
-    f"sqlite:///{settings.db_path}", connect_args={"check_same_thread": False, "timeout": 30}
-)
+
+
+def make_engine(url: str):
+    if url.startswith("sqlite"):
+        return create_engine(url, connect_args={"check_same_thread": False, "timeout": 30})
+    return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
+
+
+engine = make_engine(settings.db_url)
 Base.metadata.create_all(engine)
 
 
 def _migrate() -> None:
-    """Add columns created after the first release (SQLite: ALTER TABLE ADD COLUMN)."""
+    """Add columns created after the first release (ALTER TABLE ADD COLUMN)."""
     with engine.begin() as c:
+        insp = inspect(c)
         for table in Base.metadata.sorted_tables:
-            have = {r[1] for r in c.exec_driver_sql(f"PRAGMA table_info({table.name})")}
+            have = {col["name"] for col in insp.get_columns(table.name)}
             for col in table.columns:
                 if col.name not in have:
                     ddl = col.type.compile(engine.dialect)

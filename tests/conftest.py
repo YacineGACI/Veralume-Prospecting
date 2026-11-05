@@ -9,6 +9,8 @@ os.environ["PROSPECT_DATA_DIR"] = _TMP
 os.environ["PROSPECT_MAIL_DRY_RUN"] = "true"
 os.environ["PROSPECT_RUN_WORKER"] = "false"
 os.environ["PROSPECT_MAIL_FROM"] = "moi@veralume.test"
+# Never the real database from .env: a throwaway SQLite file, or a test PostgreSQL if given.
+os.environ["PROSPECT_DATABASE_URL"] = os.environ.get("PROSPECT_TEST_DATABASE_URL", "")
 for k in ("PROSPECT_SMTP_HOST", "PROSPECT_SMTP_USER", "PROSPECT_SMTP_PASSWORD", "PROSPECT_IMAP_HOST",
           "PROSPECT_GEMINI_API_KEY", "PROSPECT_MISTRAL_API_KEY", "PROSPECT_ANTHROPIC_API_KEY",
           "PROSPECT_OLLAMA_URL", "ANTHROPIC_API_KEY"):

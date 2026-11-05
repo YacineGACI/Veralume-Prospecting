@@ -39,7 +39,8 @@ def add_lead(db) -> int:
 
 
 def last_eml() -> email.message.EmailMessage:
-    return email.message_from_bytes(mailer.outbox_files()[-1].read_bytes(), policy=default_policy)
+    newest = max(mailer.outbox_files(), key=lambda p: p.stat().st_mtime_ns)
+    return email.message_from_bytes(newest.read_bytes(), policy=default_policy)
 
 
 def send(lead_id: int, **kw) -> dict:

@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     radius_km: float = 30.0
 
     data_dir: Path = ROOT / "data"
+    # The database: PostgreSQL, e.g. postgresql+psycopg://user:pw@127.0.0.1:5433/prospecting.
+    # Empty: a SQLite file in data_dir (the tests use that).
+    database_url: str | None = None
     # Screening runs Veralume's own line measurement, in Veralume's environment.
     veralume_dir: Path = ROOT.parent / "Veralume"
 
@@ -79,6 +82,10 @@ class Settings(BaseSettings):
     @property
     def db_path(self) -> Path:
         return self.data_dir / "prospecting.db"
+
+    @property
+    def db_url(self) -> str:
+        return self.database_url or f"sqlite:///{self.db_path}"
 
     @property
     def outbox_dir(self) -> Path:
