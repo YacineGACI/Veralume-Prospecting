@@ -28,7 +28,7 @@ SCHEMA = {
     "required": ["subject", "body"],
     "additionalProperties": False,
 }
-PLACEHOLDERS = ["prenom", "agence", "ville", "lean", "n", "site", "signature"]
+PLACEHOLDERS = ["prenom", "agence", "ville", "lean", "n", "site", "nb_images", "signature"]
 KIND_FR = {
     "photographer": "photographe immobilier",
     "agency": "agence immobilière",
@@ -252,7 +252,7 @@ Règles :
 Réponds uniquement avec un objet JSON : {{"subject": "...", "body": "..."}}."""
 
 TEMPLATE_RULES = """Tu écris un MODÈLE réutilisable, pas un email pour une personne précise.
-Utilise ces champs tels quels, entre accolades, là où ils ont du sens : {prenom} (prénom, peut être vide : écris « Bonjour {prenom}, »), {agence} (nom de l'entreprise), {ville}, {lean} (inclinaison mesurée de leurs photos, par ex. « 2,4° »), {n} (nombre de photos mesurées), {site} (leur site web), {signature} (à la fin, toujours).
+Utilise ces champs tels quels, entre accolades, là où ils ont du sens : {prenom} (prénom, peut être vide : écris « Bonjour {prenom}, »), {agence} (nom de l'entreprise), {ville}, {lean} (inclinaison mesurée de leurs photos, par ex. « 2,4° »), {n} (nombre de photos mesurées), {site} (leur site web), {nb_images} (nombre d'images avant/après jointes), {signature} (à la fin, toujours).
 N'écris jamais de vrai nom de personne ou d'entreprise."""
 
 

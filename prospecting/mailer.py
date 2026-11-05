@@ -15,7 +15,7 @@ import smtplib
 import ssl
 from datetime import datetime, timedelta
 from email.message import EmailMessage
-from email.utils import formataddr, make_msgid
+from email.utils import formataddr, formatdate, make_msgid
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -24,6 +24,7 @@ from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from prospecting import pilot
 from prospecting.config import settings
 from prospecting.contacts import shared_contacts, usable_emails
 from prospecting.db import Activity, Lead, Message, Photo, Setting, Template, now
@@ -140,9 +141,17 @@ def variables(s: Session, lead: Lead) -> dict[str, str]:
 
 
 def render(text: str, values: dict[str, str]) -> str:
-    out = re.sub(r"\{(\w+)\}", lambda m: values.get(m.group(1), m.group(0)), text)
-    # "Bonjour ," when the first name is unknown.
-    out = re.sub(r"[ \t]+([,!?])", r"\1", out)
+    def fill(m: re.Match[str]) -> str:
+        v = values.get(m.group(2))
+        if v is None:
+            return m.group(0)
+        # An empty value takes its leading space with it: "Bonjour {prenom}," → "Bonjour,".
+        # Spaces before ? ! : in the template itself stay (French typography).
+        return m.group(1) + v if v else ""
+
+    out = re.sub(r"([ \t]*)\{(\w+)\}", fill, text)
+    # "{prenom}, votre avis ?" with no first name: don't start a line with a comma.
+    out = re.sub(r"(?m)^[ \t]*[,;][ \t]*(\w?)", lambda m: m.group(1).upper(), out)
     return re.sub(r"[ \t]{2,}", " ", out)
 
 
@@ -208,11 +217,14 @@ def pick_template(s: Session, lead: Lead, step: int = 0) -> Template | None:
 def draft(s: Session, lead: Lead, template: Template) -> dict[str, Any]:
     """Subject and body for one lead, ready to edit."""
     v = variables(s, lead)
+    assets = list(template.asset_ids or [])
+    v["nb_images"] = str(len(assets))
     photo = best_photo(s, lead.id) if template.attach_photo else None
     return {
         "subject": render(template.subject, v),
         "body": render(template.body, v),
         "attach_photo_id": photo.id if photo else None,
+        "asset_ids": assets,
     }
 
 
@@ -273,7 +285,9 @@ def build(msg: Message, lead: Lead, s: Session) -> EmailMessage:
     if msg.in_reply_to:
         em["In-Reply-To"] = msg.in_reply_to
         em["References"] = msg.in_reply_to
-    em["List-Unsubscribe"] = f"<mailto:{sender}?subject=stop>"
+    em["Date"] = formatdate(localtime=True)
+    # No List-Unsubscribe header: Gmail files mail carrying it under Promotions. A personal
+    # one-to-one email doesn't need it; the opt-out sentence in the footer is what the law asks.
     em.set_content(f"{msg.body.rstrip()}\n\n--\n{footer(lead, msg.to_addr or '')}\n")
     if msg.attach_photo_id:
         photo = s.get(Photo, msg.attach_photo_id)
@@ -283,6 +297,13 @@ def build(msg: Message, lead: Lead, s: Session) -> EmailMessage:
                 marked_photo(photo), maintype="image", subtype="jpeg",
                 filename=f"votre-photo-{name or 'annonce'}.jpg",
             )  # fmt: skip
+    try:
+        files = pilot.attachments(s, msg)
+    except pilot.FileError as e:
+        raise MailError(str(e)) from e
+    for fname, data in files:
+        sub = {".png": "png", ".webp": "webp"}.get(Path(fname).suffix.lower(), "jpeg")
+        em.add_attachment(data, maintype="image", subtype=sub, filename=fname)
     return em
 
 
@@ -359,6 +380,7 @@ def record_sent(
         lead.status = "contacted"
     if msg.step == 0 and followups:
         schedule_followups(s, lead, msg)
+    pilot.after_send(s, lead, msg)
     return msg
 
 
@@ -368,12 +390,14 @@ def new_outbound(
     attach_photo_id: int | None = None, in_reply_to: str | None = None,
     status: str = "queued", due_at: str | None = None,
     experiment_id: int | None = None, edited: bool | None = None,
+    asset_ids: list[int] | None = None, file_ids: list[int] | None = None,
 ) -> Message:  # fmt: skip
     to = to or next(iter(usable_emails(lead, shared_contacts()[0])), None)
     msg = Message(
         lead_id=lead.id, direction="out", status=status, to_addr=to, subject=subject, body=body,
         step=step, template_id=template_id, campaign_id=campaign_id,
         experiment_id=experiment_id, edited=edited,
+        asset_ids=list(asset_ids or []), file_ids=list(file_ids or []),
         attach_photo_id=attach_photo_id, in_reply_to=in_reply_to, due_at=due_at or now(),
     )  # fmt: skip
     s.add(msg)
@@ -394,6 +418,7 @@ def schedule_followups(s: Session, lead: Lead, first: Message) -> list[Message]:
             s, lead, subject=subj, body=d["body"], to=first.to_addr, step=i,
             template_id=t.id, campaign_id=first.campaign_id,
             attach_photo_id=d["attach_photo_id"] or (first.attach_photo_id if i == 1 else None),
+            asset_ids=d["asset_ids"],
             in_reply_to=first.message_id, due_at=iso(morning(int(f["days"]))),
         ))  # fmt: skip
     return out

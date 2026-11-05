@@ -115,6 +115,9 @@ class Lead(Base):
     last_contacted_at: Mapped[str | None] = mapped_column(String(32))
     snoozed_until: Mapped[str | None] = mapped_column(String(32))
     campaign_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    # The free test: interested → photos → retouching → sent_back → feedback → customer | lost
+    pilot_stage: Mapped[str | None] = mapped_column(String(12), index=True)
+    pilot_due_at: Mapped[str | None] = mapped_column(String(32))  # when we promised the photos
 
     photos: Mapped[list[Photo]] = relationship(
         back_populates="lead", cascade="all, delete-orphan", order_by="Photo.id"
@@ -208,8 +211,40 @@ class Template(Base):
     subject: Mapped[str] = mapped_column(String(300))
     body: Mapped[str] = mapped_column(Text)
     attach_photo: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Images from the library sent with every email of this template (before/after examples).
+    asset_ids: Mapped[list[int] | None] = mapped_column(JSON, default=list)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     updated_at: Mapped[str] = mapped_column(String(32), default=now, onupdate=now)
+
+
+class Asset(Base):
+    """An image in the library, attached to templates (before/after examples)."""
+
+    __tablename__ = "assets"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(160))
+    path: Mapped[str] = mapped_column(String(300))  # relative to data_dir
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[str] = mapped_column(String(32), default=now)
+
+
+class LeadFile(Base):
+    """A photo a lead sent us (received) or our retouched version of one (retouched)."""
+
+    __tablename__ = "lead_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    lead_id: Mapped[int] = mapped_column(ForeignKey("leads.id", ondelete="CASCADE"), index=True)
+    message_id: Mapped[int | None] = mapped_column(Integer, index=True)  # the email it came in
+    kind: Mapped[str] = mapped_column(String(12), default="received")  # received | retouched
+    filename: Mapped[str] = mapped_column(String(200))
+    path: Mapped[str] = mapped_column(String(300))  # relative to data_dir
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    original_id: Mapped[int | None] = mapped_column(Integer)  # retouched: the photo it redoes
+    sent_at: Mapped[str | None] = mapped_column(String(32))  # retouched: when we sent it back
+    created_at: Mapped[str] = mapped_column(String(32), default=now)
 
 
 class Campaign(Base):
@@ -244,6 +279,9 @@ class Message(Base):
     campaign_id: Mapped[int | None] = mapped_column(Integer)
     step: Mapped[int] = mapped_column(Integer, default=0)
     attach_photo_id: Mapped[int | None] = mapped_column(Integer)
+    asset_ids: Mapped[list[int] | None] = mapped_column(JSON, default=list)  # library images
+    file_ids: Mapped[list[int] | None] = mapped_column(JSON, default=list)  # lead files
+    links: Mapped[list[str] | None] = mapped_column(JSON, default=list)  # in: transfer links
     due_at: Mapped[str | None] = mapped_column(String(32), index=True)
     experiment_id: Mapped[int | None] = mapped_column(Integer, index=True)
     edited: Mapped[bool | None] = mapped_column(Boolean)  # first email changed by hand

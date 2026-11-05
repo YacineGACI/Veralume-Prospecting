@@ -13,8 +13,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 
-from prospecting import enrich, mailer, scoring, screen, worker
+from prospecting import enrich, mailer, pilot, scoring, screen, worker
 from prospecting.api.experiments import router as experiments_router
+from prospecting.api.pilot import router as pilot_router
 from prospecting.api.outreach import router as outreach_router
 from prospecting.api.writer import router as writer_router
 from prospecting.config import settings
@@ -51,6 +52,7 @@ app.mount("/static", StaticFiles(directory=STATIC), name="static")
 app.include_router(outreach_router)
 app.include_router(experiments_router)
 app.include_router(writer_router)
+app.include_router(pilot_router)
 
 
 def _get(s, lead_id: int) -> Lead:
@@ -92,7 +94,8 @@ def detail(s, lead: Lead) -> dict[str, Any]:
             {"id": m.id, "direction": m.direction, "status": m.status, "subject": m.subject,
              "body": m.body, "to": m.to_addr, "from": m.from_addr, "step": m.step,
              "due_at": m.due_at, "sent_at": m.sent_at, "error": m.error,
-             "attach_photo_id": m.attach_photo_id}
+             "attach_photo_id": m.attach_photo_id, "asset_ids": m.asset_ids or [],
+             "file_ids": m.file_ids or [], "links": m.links or []}
             for m in msgs
         ],
     }  # fmt: skip
@@ -221,6 +224,8 @@ def _apply(s, l: Lead, patch: LeadPatch) -> None:
             raise HTTPException(422, "Unknown status")
         s.add(Activity(lead_id=l.id, kind="status", text=f"{l.status} → {patch.status}"))
         l.status = patch.status
+        if patch.status == "pilot" and not l.pilot_stage:  # it shows on the pilots board
+            pilot.set_stage(s, l, "interested")
         if patch.status in ("lost", "customer", "replied", "interview", "pilot"):
             mailer.cancel_pending(s, l.id, f"moved to {patch.status}")
     if patch.kind and patch.kind in KINDS:

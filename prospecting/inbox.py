@@ -19,6 +19,7 @@ from selectolax.lexbor import LexborHTMLParser as HTMLParser
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from prospecting import pilot
 from prospecting.config import settings
 from prospecting.contacts import mark
 from prospecting.db import Activity, Lead, Message, now
@@ -52,8 +53,13 @@ def body_text(em: EmailMessage) -> str:
 def new_text(text: str) -> str:
     """The reply itself, without the quoted thread below it."""
     lines = []
-    for line in text.splitlines():
-        if _QUOTE_START.match(line.strip()):
+    raw = text.splitlines()
+    for i, line in enumerate(raw):
+        # Gmail wraps "Le mer. 4 nov. 2026 à 13:58, Name <addr>" / "a écrit :" on two lines.
+        joined = f"{line.strip()} {raw[i + 1].strip()}" if i + 1 < len(raw) else line.strip()
+        if _QUOTE_START.match(line.strip()) or (
+            re.match(r"^(le|on) ", line.strip(), re.IGNORECASE) and _QUOTE_START.match(joined)
+        ):
             break
         lines.append(line)
     return "\n".join(lines).strip()
@@ -123,12 +129,14 @@ def handle(s: Session, em: EmailMessage) -> str | None:
         at = iso(parsedate_to_datetime(str(em["Date"]))) if em["Date"] else now()
     except (TypeError, ValueError):
         at = now()
-    s.add(Message(
+    incoming = Message(
         lead_id=lead.id, direction="in", status="received", from_addr=sender,
         to_addr=", ".join(a for _, a in getaddresses([str(em["To"] or "")])),
         subject=str(em["Subject"] or ""), body=text[:5000], message_id=mid or None,
         in_reply_to=sent.message_id, sent_at=at,
-    ))  # fmt: skip
+    )  # fmt: skip
+    s.add(incoming)
+    s.flush()
     s.add(Activity(lead_id=lead.id, kind="email_in", text=re.sub(r"\s+", " ", text)[:280]))
     cancel_pending(s, lead.id, "they replied")
     if _STOP.match(text):
@@ -139,6 +147,8 @@ def handle(s: Session, em: EmailMessage) -> str | None:
     if lead.status in ("new", "shortlisted", "contacted"):
         s.add(Activity(lead_id=lead.id, kind="status", text=f"{lead.status} → replied"))
         lead.status = "replied"
+    pilot.on_reply(s, lead)
+    pilot.save_inbound(s, lead, incoming, em)
     return "reply"
 
 

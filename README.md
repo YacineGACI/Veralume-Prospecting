@@ -71,6 +71,23 @@ Pick the AI in Settings once its key is in `.env` (see `.env.example`): Gemini o
 (free tiers; lead details go to that provider), Ollama (free, runs on this machine) or
 Claude (paid, `claude-opus-5-5` by default; set `PROSPECT_AI_MODEL_CLAUDE` to change it).
 
+### Before/after images and pilots
+
+- **Images in templates**: in Campaigns, open a template and upload before/after examples
+  (or pick them from the library). Every email of that template carries them, as
+  `avant-apres-1.jpg`, `avant-apres-2.jpg`… `{nb_images}` says how many. The editor shows
+  the email exactly as a real lead of the segment gets it, with their name filled in.
+- **Their photos**: photos attached to a lead's reply are saved in their file
+  (`data/leadfiles/<lead>/`), and a WeTransfer/Drive link in it is shown so you can fetch
+  them. The lead's file has a *Their photos* tab: download one or all (.zip), drop your
+  retouched versions (matched to theirs by file name), compare side by side, and *Send
+  them back* in one email.
+- **Pilots** (`g o`): every free test, from "said yes" to the decision. The steps move on
+  their own: photos received → retouching (your first upload) → sent back → feedback
+  (their next reply). Set the date you promised; late ones are flagged.
+
+Gmail refuses emails over 25 MB: the composer shows the size and stops above 20 MB.
+
 ### A/B tests
 
 Compare two to four first emails on one segment: each new lead gets one version, and the

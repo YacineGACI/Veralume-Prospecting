@@ -49,7 +49,7 @@ def summary(lead: Lead, shared: tuple[set[str], set[str]] | None = None) -> dict
         "do_not_contact": lead.do_not_contact, "enrich_status": lead.enrich_status,
         "last_contacted_at": lead.last_contacted_at, "next_action": lead.next_action,
         "next_action_at": lead.next_action_at, "snoozed_until": lead.snoozed_until,
-        "updated_at": lead.updated_at,
+        "updated_at": lead.updated_at, "pilot_stage": lead.pilot_stage, "pilot_due_at": lead.pilot_due_at,
     }  # fmt: skip
 
 
@@ -290,7 +290,7 @@ def log_call(
         if t and not t.archived and usable_emails(lead, shared_contacts()[0]):
             d = mailer.draft(s, lead, t)
             mailer.new_outbound(s, lead, subject=d["subject"], body=d["body"], template_id=t.id,
-                                attach_photo_id=d["attach_photo_id"])  # fmt: skip
+                                attach_photo_id=d["attach_photo_id"], asset_ids=d["asset_ids"])  # fmt: skip
             return "Voicemail logged · a short email waits for your review in Today"
         return "Voicemail logged"
     if outcome == "interested":
@@ -366,7 +366,7 @@ def prepare(s: Session, c: Campaign, n: int | None = None) -> int:
             break
         d = mailer.draft(s, lead, tpl)
         mailer.new_outbound(s, lead, subject=d["subject"], body=d["body"], template_id=tpl.id,
-                            campaign_id=c.id, attach_photo_id=d["attach_photo_id"],
+                            campaign_id=c.id, attach_photo_id=d["attach_photo_id"], asset_ids=d["asset_ids"],
                             experiment_id=exp.id if exp else None)  # fmt: skip
         lead.campaign_id = c.id
         made += 1

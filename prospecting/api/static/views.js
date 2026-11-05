@@ -416,6 +416,53 @@ export const pipeline = {
   },
 };
 
+// --- Pilots: every free test, from "send me photos" to the decision --------------------------
+const PILOT_HINTS = {
+  interested: "Waiting for their photos", photos: "Download and retouch", retouching: "Upload the results",
+  sent_back: "Waiting for their opinion", feedback: "Decide together", customer: "Paying, or about to", lost: "Not now, and why",
+};
+export const pilots = {
+  async render() {
+    const p = await api("/api/pilots");
+    const card = (l) => `<div class="kc pc ${l.urgent ? "urgent" : ""}" draggable="true" data-card="${l.id}" data-from="${l.pilot_stage}" data-open="${l.id}">
+      <div class="row" style="gap:6px;flex-wrap:nowrap"><b style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(l.person || l.name)}</b><span class="small dim">${esc(l.city || "")}</span></div>
+      ${l.person ? `<div class="m">${esc(l.name)}</div>` : ""}
+      ${l.thumbs.length ? `<div class="pc-th">${l.thumbs.map((t) => `<img src="${t}" alt="" loading="lazy">`).join("")}</div>` : ""}
+      ${l.next ? `<div class="pc-next">${l.urgent ? `<span class="dot-u" aria-label="Needs you"></span>` : ""}${esc(l.next)}</div>` : ""}
+      <div class="m"><span>${l.counts.received ? `${l.counts.retouched}/${l.counts.received} retouched` : ""}</span><span class="grow"></span><span>${l.pilot_due_at && ["photos", "retouching"].includes(l.pilot_stage) ? `due ${esc(at(l.pilot_due_at).replace(/ \d\d:\d\d$/, ""))}` : l.waiting_days ? `${l.waiting_days} d` : ""}</span></div></div>`;
+    C().innerHTML = `<div class="view wide">
+      <div class="topline"><div><h1>Pilots</h1><div class="sub">Everyone who agreed to a free test. Their reply with photos brings them here, and the steps move on their own as you work.</div></div><span class="grow"></span>
+        <div class="pl-stats"><div class="hot"><b>${p.need}</b><span>need you now</span></div><div><b>${p.running}</b><span>running</span></div><div><b>${p.photos.received}</b><span>photos received</span></div><div><b>${p.photos.sent}</b><span>sent back</span></div><div><b>${p.customers}</b><span>customer${p.customers === 1 ? "" : "s"}</span></div></div></div>
+      ${p.running || p.customers || p.columns.lost.length ? `<div class="board pl">${p.stages.map((s) => `<div class="col" data-col="${s.key}"><div class="col-h"><b>${esc(s.label)}</b><span class="n">${p.columns[s.key].length}</span></div>
+          <p class="small dim" style="margin:-4px 4px 4px">${esc(PILOT_HINTS[s.key])}</p>
+          ${p.columns[s.key].map(card).join("") || `<p class="small dim" style="padding:4px;margin:0">Nobody here.</p>`}</div>`).join("")}</div>`
+      : `<section class="card"><h3 style="margin-top:0">No free test yet</h3><p class="muted" style="margin:0 0 10px">When a lead replies with photos attached, they land here on their own, with their photos saved in their file. You can also open a lead and click <b>They said yes</b>.</p>
+          <p class="small muted" style="margin:0">Then: download their photos, retouch them with Veralume, drop the results in their file, and send them back in one click. Each step shows here.</p></section>`}</div>`;
+    C().onclick = (e) => {
+      const b = e.target.closest("[data-open]");
+      if (b) openLead(+b.dataset.open);
+    };
+    $$(".kc").forEach((k) => k.addEventListener("dragstart", (e) => e.dataTransfer.setData("text/plain", `${k.dataset.card}|${k.dataset.from}`)));
+    $$(".col").forEach((c) => {
+      c.addEventListener("dragover", (e) => { e.preventDefault(); c.classList.add("over"); });
+      c.addEventListener("dragleave", () => c.classList.remove("over"));
+      c.addEventListener("drop", async (e) => {
+        e.preventDefault();
+        c.classList.remove("over");
+        const [id, from] = e.dataTransfer.getData("text/plain").split("|");
+        const to = c.dataset.col;
+        if (!id || from === to) return;
+        try {
+          await api(`/api/leads/${id}/pilot`, { method: "PUT", body: { stage: to } });
+          toast(`Moved to ${p.stages.find((s) => s.key === to).label}`, { undo: () => api(`/api/leads/${id}/pilot`, { method: "PUT", body: { stage: from } }) });
+          if (to === "customer") confetti();
+          changed();
+        } catch (err) { fail(err); }
+      });
+    });
+  },
+};
+
 // --- Campaigns and templates ---------------------------------------------------------------
 export const campaigns = {
   async render() {
@@ -497,27 +544,90 @@ export const campaigns = {
   // x: the template to edit (null for a new one). copy: a template to start a new one from.
   // onSaved: called with the saved template instead of re-rendering Campaigns.
   async editTpl(x, { copy = null, segment = null, step = null, onSaved = null } = {}) {
-    const ai = await api("/api/ai").catch(() => null);
+    const [ai, lib] = await Promise.all([api("/api/ai").catch(() => null), api("/api/assets").catch(() => ({ items: [] }))]);
     const v = x || (copy ? { ...copy, name: `${copy.name} (new version)`, archived: false }
-      : { name: "", segment: segment || "any", step: step ?? 0, subject: "", body: "Bonjour {prenom},\n\n\n\n{signature}", attach_photo: true, archived: false });
+      : { name: "", segment: segment || "any", step: step ?? 0, subject: "", body: "Bonjour {prenom},\n\n\n\n{signature}", attach_photo: true, asset_ids: [], archived: false });
+    let picked = [...(v.asset_ids || [])];
+    const library = lib.items;
+    let previewLead = null;
+    const VARS = ["prenom", "agence", "ville", "lean", "nb_images", "signature"];
     const sheet = openModal(`<div class="sheet-h"><h2>${x ? "Edit template" : "New template"}</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
-      <form class="sheet-b"><div class="form-grid">
-        <label class="full">Name<input class="input" name="name" value="${esc(v.name)}" required></label>
-        <label>For<select class="select" name="segment"><option value="any">All segments</option>${SEGS.map((k) => `<option value="${k}" ${k === v.segment ? "selected" : ""}>${KINDS_PL[k]}</option>`).join("")}</select></label>
-        <label>Used as<select class="select" name="step">${[[0, "First email"], [1, "Follow-up 1"], [2, "Follow-up 2"], [-1, "Reply"]].map(([s, t]) => `<option value="${s}" ${s === v.step ? "selected" : ""}>${t}</option>`).join("")}</select></label>
-        <label class="full">Subject<input class="input" name="subject" value="${esc(v.subject)}" required></label>
-        <label class="full">Message<textarea class="input mailbody" name="body" lang="fr" required>${esc(v.body)}</textarea></label>
-        <div class="full">${aiBar(ai)}</div>
-        <label class="check"><input type="checkbox" class="chk" name="attach_photo" ${v.attach_photo ? "checked" : ""}> Attach their marked photo</label>
-        <label class="check"><input type="checkbox" class="chk" name="archived" ${v.archived ? "checked" : ""}> Archived (not offered)</label></div>
-        <p class="small dim" style="margin:0">Placeholders: {prenom} first name (left out when unknown), {agence} business name, {ville} town, {lean} measured lean, {n} photos measured, {site} website, {signature} your signature. Follow-ups keep the first email's subject.</p>
-        <div class="row">${x ? `<button class="btn" type="button" data-save-copy title="Keeps this one as it is">Save as a new template</button>` : ""}<span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`);
+      <form class="tpl-ed">
+        <div class="tpl-l"><div class="form-grid">
+          <label class="full">Name<input class="input" name="name" value="${esc(v.name)}" required></label>
+          <label>For<select class="select" name="segment"><option value="any">All segments</option>${SEGS.map((k) => `<option value="${k}" ${k === v.segment ? "selected" : ""}>${KINDS_PL[k]}</option>`).join("")}</select></label>
+          <label>Used as<select class="select" name="step">${[[0, "First email"], [1, "Follow-up 1"], [2, "Follow-up 2"], [-1, "Reply"]].map(([s, t]) => `<option value="${s}" ${s === v.step ? "selected" : ""}>${t}</option>`).join("")}</select></label>
+          <label class="full">Subject<input class="input" name="subject" value="${esc(v.subject)}" required></label>
+          <label class="full">Message<textarea class="input mailbody" name="body" lang="fr" required>${esc(v.body)}</textarea></label>
+          <div class="full ins-row"><span class="small muted">Insert</span>${VARS.map((k) => `<button type="button" class="chip mono" data-ins="{${k}}">{${k}}</button>`).join("")}</div>
+          <div class="full">${aiBar(ai)}</div></div>
+          <div class="tpl-imgs"><div class="row"><h4>Images sent with every email</h4><span class="small muted" data-img-n></span><span class="grow"></span>
+            <label class="btn sm">${small(I.plus)} Upload<input type="file" accept="image/jpeg,image/png,image/webp" multiple data-asset-upload hidden></label></div>
+            <div class="img-picked" data-picked></div>
+            <details><summary class="small">From your library <span data-lib-n></span></summary><div class="img-lib" data-lib></div></details>
+            <p class="small dim" style="margin:0">Before/after pairs work best side by side in one image, about 2000 px wide. Keep the total under 5 MB.</p></div>
+          <div class="row"><label class="check"><input type="checkbox" class="chk" name="attach_photo" ${v.attach_photo ? "checked" : ""}> Also attach the lead's own photo, marked</label>
+            <label class="check"><input type="checkbox" class="chk" name="archived" ${v.archived ? "checked" : ""}> Archived (not offered)</label></div>
+        </div>
+        <div class="tpl-r"><div class="row"><h4 style="flex:1">What a real lead gets</h4><select class="select" data-prev-lead aria-label="Preview for"></select></div>
+          <div class="pv" data-preview><p class="small muted">Loading a lead…</p></div>
+          <p class="small dim" style="margin:0">{prenom} is left out when the first name isn't known: “Bonjour {prenom},” becomes “Bonjour,”.</p></div>
+        <div class="tpl-foot">${x ? `<button class="btn" type="button" data-save-copy title="Keeps this one as it is">Save as a new template</button>` : ""}<span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`, { cls: "wide" });
     const tf = sheet.querySelector("form");
     wireAiBar(sheet.querySelector(".ai-bar"), {
       subject: tf.subject, body: tf.body, extra: () => ({ segment: tf.segment.value, step: +tf.step.value }),
     });
+    const thumb = (id) => library.find((y) => y.id === id);
+    const drawImgs = () => {
+      const tot = picked.reduce((s, id) => s + (thumb(id)?.size || 0), 0);
+      $("[data-img-n]", sheet).innerHTML = picked.length ? `${picked.length} · ${(tot / 1e6).toFixed(1)} MB${tot > 5e6 ? ` <span class="flag">heavy</span>` : ""}` : "none yet";
+      $("[data-picked]", sheet).innerHTML = picked.length ? picked.map((id, i) => { const a = thumb(id); return a ? `<figure><img src="${a.thumb}" alt="${esc(a.name)}"><figcaption><span>${i + 1} · ${esc(a.name)}</span>${i ? `<button type="button" data-left="${id}" aria-label="Move earlier">←</button>` : ""}<button type="button" data-unpick="${id}" aria-label="Remove ${esc(a.name)}">${small(I.x)}</button></figcaption></figure>` : ""; }).join("")
+        : `<p class="small muted" style="margin:0">No image. Upload before/after examples, or pick them from your library.</p>`;
+      const rest = library.filter((a) => !picked.includes(a.id));
+      $("[data-lib-n]", sheet).textContent = `(${rest.length})`;
+      $("[data-lib]", sheet).innerHTML = rest.map((a) => `<button type="button" data-pick="${a.id}" title="Add ${esc(a.name)}"><img src="${a.thumb}" alt="${esc(a.name)}"><span>${esc(a.name)}</span></button>`).join("") || `<p class="small muted" style="margin:0">Nothing else in your library.</p>`;
+    };
+    let pvTimer;
+    const preview = () => {
+      clearTimeout(pvTimer);
+      pvTimer = setTimeout(async () => {
+        try {
+          const p = await api("/api/templates/preview", { method: "POST", body: { subject: tf.subject.value, body: tf.body.value, segment: tf.segment.value, asset_ids: picked, lead_id: previewLead } });
+          const sel = $("[data-prev-lead]", sheet);
+          if (!sel.options.length && p.choices.length) sel.innerHTML = p.choices.map((c) => `<option value="${c.id}">${esc(c.label)}</option>`).join("");
+          if (!p.lead) { $("[data-preview]", sheet).innerHTML = `<p class="small muted">No lead with a first name in this segment yet.</p>`; return; }
+          const atts = picked.map(thumb).filter(Boolean);
+          $("[data-preview]", sheet).innerHTML = `<div class="pv-h"><span>To</span><b>${esc(p.to)}</b><span>Subject</span><b>${esc(p.subject)}</b></div>
+            <div class="pv-b">${esc(p.body)}<div class="optout">--\n${esc(p.footer)}</div></div>
+            ${atts.length ? `<div class="pv-a">${atts.map((a, i) => `<img src="${a.thumb}" alt="Attachment ${i + 1}">`).join("")}</div>` : ""}`;
+        } catch (e) { $("[data-preview]", sheet).innerHTML = `<p class="small muted">${esc(e.message)}</p>`; }
+      }, 250);
+    };
+    drawImgs();
+    preview();
+    sheet.oninput = (e) => { if (e.target.matches("[name=subject], [name=body]")) preview(); };
+    sheet.onchange = async (e) => {
+      const t = e.target;
+      if (t.matches("[name=segment]")) { $("[data-prev-lead]", sheet).innerHTML = ""; previewLead = null; preview(); }
+      if (t.matches("[data-prev-lead]")) { previewLead = +t.value; preview(); }
+      if (t.matches("[data-asset-upload]")) {
+        for (const file of [...t.files]) {
+          try {
+            toast(`Uploading ${file.name}…`);
+            const r = await fetch(`/api/assets?name=${encodeURIComponent(file.name)}`, { method: "POST", body: file });
+            const j = await r.json();
+            if (!r.ok) throw new Error(`${file.name}: ${j.detail}`);
+            library.push(j);
+            picked.push(j.id);
+          } catch (err) { fail(err); }
+        }
+        t.value = "";
+        drawImgs();
+        preview();
+      }
+    };
     const save = async (f, asNew, btn) => {
-      const body = { name: f.name.value, segment: f.segment.value, step: +f.step.value, subject: f.subject.value, body: f.body.value, attach_photo: f.attach_photo.checked, archived: f.archived.checked };
+      const body = { name: f.name.value, segment: f.segment.value, step: +f.step.value, subject: f.subject.value, body: f.body.value, attach_photo: f.attach_photo.checked, asset_ids: picked, archived: f.archived.checked };
       if (asNew && body.name === x.name) body.name = `${x.name} (new version)`;
       await busy(btn, async () => {
         const saved = await api(x && !asNew ? `/api/templates/${x.id}` : "/api/templates", { method: x && !asNew ? "PUT" : "POST", body });
@@ -530,7 +640,25 @@ export const campaigns = {
       if (e.target.closest("[data-close]")) closeModal();
       const c = e.target.closest("[data-save-copy]");
       if (c) save(sheet.querySelector("form"), true, c);
+      const b = e.target.closest("button");
+      if (!b) return;
+      const d = b.dataset;
+      if (d.ins) {
+        const ta = document.activeElement === tf.subject ? tf.subject : tf.body;
+        const at_ = ta.selectionStart ?? ta.value.length;
+        ta.value = ta.value.slice(0, at_) + d.ins + ta.value.slice(ta.selectionEnd ?? at_);
+        ta.focus();
+        ta.selectionStart = ta.selectionEnd = at_ + d.ins.length;
+        preview();
+      } else if (d.pick) { picked.push(+d.pick); drawImgs(); preview(); }
+      else if (d.unpick) { picked = picked.filter((y) => y !== +d.unpick); drawImgs(); preview(); }
+      else if (d.left) { const i = picked.indexOf(+d.left); [picked[i - 1], picked[i]] = [picked[i], picked[i - 1]]; drawImgs(); preview(); }
     };
+    // Insert buttons go into the field you were last typing in.
+    let lastField = tf.body;
+    tf.subject.addEventListener("focus", () => (lastField = tf.subject));
+    tf.body.addEventListener("focus", () => (lastField = tf.body));
+    sheet.addEventListener("mousedown", (e) => { if (e.target.closest("[data-ins]")) { e.preventDefault(); lastField.focus(); } });
     sheet.onsubmit = (e) => { e.preventDefault(); save(e.target, false, e.target.querySelector(".primary")); };
   },
 };

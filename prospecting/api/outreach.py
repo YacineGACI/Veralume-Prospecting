@@ -11,11 +11,22 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from prospecting import experiments, inbox, mailer, outreach, worker
+from prospecting import experiments, inbox, mailer, outreach, pilot, worker
 from prospecting.config import settings
 from prospecting.contacts import shared_contacts, usable_emails
 from prospecting.db import (
-    KINDS, STATUSES, Campaign, Experiment, Lead, Message, Photo, Template, now, session,
+    KINDS,
+    STATUSES,
+    Asset,
+    Campaign,
+    Experiment,
+    Lead,
+    LeadFile,
+    Message,
+    Photo,
+    Template,
+    now,
+    session,
 )  # fmt: skip
 from prospecting.mailer import MailError
 from prospecting.outreach import summary
@@ -37,6 +48,7 @@ def _msg(m: Message) -> dict[str, Any]:
         "due_at": m.due_at, "sent_at": m.sent_at, "error": m.error,
         "campaign_id": m.campaign_id, "template_id": m.template_id,
         "attach_photo_id": m.attach_photo_id, "experiment_id": m.experiment_id,
+        "asset_ids": m.asset_ids or [], "file_ids": m.file_ids or [], "links": m.links or [],
     }  # fmt: skip
 
 
@@ -143,7 +155,10 @@ def compose(lead_id: int, template_id: int | None = None) -> dict[str, Any]:
         photo = s.get(Photo, d["attach_photo_id"]) if d["attach_photo_id"] else None
         photo = photo or mailer.best_photo(s, lead.id)
         best = next(iter(usable_emails(lead, se)), None)
+        assets = [pilot.asset_dict(a) for aid in d["asset_ids"] if (a := s.get(Asset, aid))]
+        files = s.scalars(select(LeadFile).where(LeadFile.lead_id == lead.id).order_by(LeadFile.id))
         return {
+            "assets": assets, "files": [pilot.file_dict(f) for f in files],
             "lead": summary(lead), "mode": mode, "template_id": t.id, "step": step,
             "subject": subject, "body": d["body"], "in_reply_to": in_reply_to,
             "to": best, "to_options": [e["value"] for e in lead.emails or []],
@@ -175,6 +190,8 @@ class SendIn(BaseModel):
     when: str = "now"
     experiment_id: int | None = None
     edited: bool | None = None
+    asset_ids: list[int] = []
+    file_ids: list[int] = []
 
 
 @router.post("/send")
@@ -202,7 +219,15 @@ def send(b: SendIn) -> dict[str, Any]:
             step=step, template_id=b.template_id, attach_photo_id=b.attach_photo_id,
             in_reply_to=b.in_reply_to, status="approved",
             experiment_id=exp.id if exp else None, edited=b.edited if step == 0 else None,
+            asset_ids=[a for a in b.asset_ids if s.get(Asset, a)],
+            file_ids=[f for f in b.file_ids if (x := s.get(LeadFile, f)) and x.lead_id == lead.id],
         )  # fmt: skip
+        if b.when != "external":
+            try:  # too big for Gmail: say so before anything is recorded as sent
+                pilot.attachments(s, msg)
+            except pilot.FileError as e:
+                s.rollback()
+                raise HTTPException(422, str(e)) from e
         if b.when == "external":
             mailer.log_external(s, msg)
         elif b.when == "now":
@@ -353,7 +378,7 @@ def pipeline(kind: str = "") -> dict[str, Any]:
 def _tpl(t: Template) -> dict[str, Any]:
     return {"id": t.id, "key": t.key, "name": t.name, "segment": t.segment, "step": t.step,
             "subject": t.subject, "body": t.body, "attach_photo": t.attach_photo,
-            "archived": t.archived}  # fmt: skip
+            "asset_ids": t.asset_ids or [], "archived": t.archived}  # fmt: skip
 
 
 @router.get("/templates")
@@ -377,7 +402,7 @@ def templates() -> dict[str, Any]:
                 for t in rows
             ],
             "signature": mailer.get_setting(s, "signature", mailer.DEFAULT_SIGNATURE),
-            "variables": ["prenom", "agence", "ville", "lean", "n", "site", "signature"],
+            "variables": ["prenom", "agence", "ville", "lean", "n", "site", "nb_images", "signature"],
         }  # fmt: skip
 
 
@@ -388,6 +413,7 @@ class TemplateIn(BaseModel):
     subject: str
     body: str
     attach_photo: bool = True
+    asset_ids: list[int] = []
     archived: bool = False
 
 
@@ -411,6 +437,42 @@ def save_template(template_id: int, t: TemplateIn) -> dict[str, Any]:
             setattr(row, k, v)
         s.commit()
         return _tpl(row)
+
+
+class PreviewIn(BaseModel):
+    subject: str = ""
+    body: str = ""
+    segment: str = "any"
+    asset_ids: list[int] = []
+    lead_id: int | None = None
+
+
+@router.post("/templates/preview")
+def preview_template(p: PreviewIn) -> dict[str, Any]:
+    """The template as one real lead of its segment would get it."""
+    se, _ = shared_contacts()
+    with session() as s:
+        q = select(Lead).where(Lead.do_not_contact.is_(False))
+        if p.segment in KINDS:
+            q = q.where(Lead.kind == p.segment)
+        # A few leads with a first name and their own address, best first.
+        choices = [
+            l for l in s.scalars(q.order_by(Lead.score.desc()).limit(400))
+            if usable_emails(l, se) and mailer.first_name(l)
+        ][:12]  # fmt: skip
+        lead = s.get(Lead, p.lead_id) if p.lead_id else (choices[0] if choices else None)
+        if lead is None:
+            return {"lead": None, "choices": []}
+        v = mailer.variables(s, lead)
+        v["nb_images"] = str(len(p.asset_ids))
+        to = next(iter(usable_emails(lead, se)), "")
+        return {
+            "lead": {"id": lead.id, "name": lead.name, "person": outreach.person(lead), "city": lead.city},
+            "to": to, "subject": mailer.render(p.subject, v), "body": mailer.render(p.body, v),
+            "footer": mailer.footer(lead, to or ""),
+            "choices": [{"id": l.id, "label": f"{l.name} · {mailer.first_name(l)} · {l.city or ''}"}
+                        for l in choices],
+        }  # fmt: skip
 
 
 # --- campaigns -----------------------------------------------------------------------

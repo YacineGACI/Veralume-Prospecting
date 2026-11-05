@@ -1,9 +1,9 @@
 // Veralume Prospects: router, search palette, keyboard, refresh. No build step.
 import { $, $$, api, av, bus, closeModal, esc, fail, KIND, modalOpen, pill } from "./core.js";
 import { closeLead, drawer, leadKey, openLead } from "./lead.js";
-import { applyTheme, calls, campaigns, insights, leads, pipeline, settingsView, tests, today, ui } from "./views.js";
+import { applyTheme, calls, campaigns, insights, leads, pilots, pipeline, settingsView, tests, today, ui } from "./views.js";
 
-const VIEWS = { today, leads, call: calls, pipeline, campaigns, tests, insights, settings: settingsView };
+const VIEWS = { today, leads, call: calls, pipeline, pilots, campaigns, tests, insights, settings: settingsView };
 let current = null;
 const viewName = () => (VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : "today");
 
@@ -42,7 +42,7 @@ bus.addEventListener("changed", () => {
 
 // --- search palette ------------------------------------------------------------------
 const CMDS = [
-  ["Today", "#today", "g t"], ["Leads", "#leads", "g l"], ["Call mode", "#call", "g c"], ["Pipeline", "#pipeline", "g p"],
+  ["Today", "#today", "g t"], ["Leads", "#leads", "g l"], ["Call mode", "#call", "g c"], ["Pipeline", "#pipeline", "g p"], ["Pilots and their photos", "#pilots", "g o"],
   ["Campaigns and templates", "#campaigns", "g m"], ["A/B tests", "#tests", "g a"], ["Insights", "#insights", "g i"], ["Settings and mailbox", "#settings", "g s"],
 ];
 let palIdx = 0, palItems = [], palTimer;
@@ -107,7 +107,7 @@ document.addEventListener("keydown", (e) => {
   if (drawer.lead) { if (leadKey(e)) e.preventDefault(); return; }
   if (gPending) {
     gPending = false;
-    const to = { t: "today", l: "leads", c: "call", p: "pipeline", m: "campaigns", a: "tests", i: "insights", s: "settings" }[e.key];
+    const to = { t: "today", l: "leads", c: "call", p: "pipeline", o: "pilots", m: "campaigns", a: "tests", i: "insights", s: "settings" }[e.key];
     if (to) { location.hash = to; e.preventDefault(); }
     return;
   }
