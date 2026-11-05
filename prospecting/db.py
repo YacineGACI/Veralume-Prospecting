@@ -1,4 +1,5 @@
-"""SQLite storage: leads, the photos measured on their sites, and the contact log.
+"""PostgreSQL storage: leads, their contacts and measured photos, emails, campaigns,
+pilots and the contact log.
 
 Every contact fact keeps its source (`{"value", "source"}`), so "where did you get my
 email?" always has an answer.
@@ -380,8 +381,6 @@ settings.data_dir.mkdir(parents=True, exist_ok=True)
 
 
 def make_engine(url: str):
-    if url.startswith("sqlite"):
-        return create_engine(url, connect_args={"check_same_thread": False, "timeout": 30})
     return create_engine(url, pool_pre_ping=True, pool_size=5, max_overflow=10)
 
 

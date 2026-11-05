@@ -57,8 +57,8 @@ docker run -d --name veralume-prospecting-db --restart unless-stopped \
 echo "PROSPECT_DATABASE_URL=postgresql+psycopg://prospect:$PW@127.0.0.1:5433/prospecting" >> .env
 ```
 
-The tables are created the first time the app or any `prospect` command runs. Without
-`PROSPECT_DATABASE_URL`, the app uses a SQLite file instead (`data/prospecting.db`).
+The tables are created the first time the app or any `prospect` command runs. PostgreSQL
+is the only database: without `PROSPECT_DATABASE_URL`, the app stops and says what to set.
 
 **The mailbox** (to send and read replies): in `.env`, set `PROSPECT_SMTP_HOST`,
 `PROSPECT_SMTP_USER`, `PROSPECT_SMTP_PASSWORD`, `PROSPECT_IMAP_HOST` and
@@ -265,7 +265,7 @@ In `.env` (see `.env.example`); every setting of `prospecting/config.py` can be 
 
 | Variable | What |
 |---|---|
-| `PROSPECT_DATABASE_URL` | The PostgreSQL database. Empty: SQLite in `data/` |
+| `PROSPECT_DATABASE_URL` | The PostgreSQL database (required) |
 | `PROSPECT_SMTP_HOST`, `_PORT`, `_USER`, `_PASSWORD`, `PROSPECT_IMAP_HOST` | Your mailbox |
 | `PROSPECT_MAIL_FROM_NAME` | The sender name leads see |
 | `PROSPECT_DAILY_SEND_CAP` | Most emails sent a day (default 30) |
@@ -286,12 +286,14 @@ use. No automated calls.
 ## Development
 
 ```bash
-uv run pytest                    # on a throwaway SQLite database; never touches your data
-PROSPECT_TEST_DATABASE_URL=postgresql+psycopg://prospect:…@127.0.0.1:5433/prospecting_test uv run pytest
+uv run pytest
 ```
 
-The second line runs the same tests on PostgreSQL, in a separate empty database
-(`docker exec veralume-prospecting-db createdb -U prospect prospecting_test` once).
+The tests run on PostgreSQL, in a separate database next to yours: the one in `.env` with
+`_test` added to its name (`prospecting_test`), emptied by each test. Create it once with
+`docker exec veralume-prospecting-db createdb -U prospect prospecting_test`. They refuse to
+run on a database whose name does not end in `_test`, so your data is never touched.
+`PROSPECT_TEST_DATABASE_URL` points them elsewhere.
 
 | Path | What |
 |---|---|

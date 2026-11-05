@@ -24,8 +24,7 @@ class Settings(BaseSettings):
     radius_km: float = 30.0
 
     data_dir: Path = ROOT / "data"
-    # The database: PostgreSQL, e.g. postgresql+psycopg://user:pw@127.0.0.1:5433/prospecting.
-    # Empty: a SQLite file in data_dir (the tests use that).
+    # The database, PostgreSQL only: postgresql+psycopg://user:pw@127.0.0.1:5433/prospecting.
     database_url: str | None = None
     # Screening runs Veralume's own line measurement, in Veralume's environment.
     veralume_dir: Path = ROOT.parent / "Veralume"
@@ -80,12 +79,15 @@ class Settings(BaseSettings):
     ai_model_ollama: str = "qwen2.5:3b"
 
     @property
-    def db_path(self) -> Path:
-        return self.data_dir / "prospecting.db"
-
-    @property
     def db_url(self) -> str:
-        return self.database_url or f"sqlite:///{self.db_path}"
+        url = (self.database_url or "").strip()
+        if not url.startswith("postgresql"):
+            raise RuntimeError(
+                "No database configured. Set PROSPECT_DATABASE_URL in .env to the PostgreSQL "
+                "database, e.g. postgresql+psycopg://prospect:<password>@127.0.0.1:5433/prospecting "
+                "(see the README, 'Set it up on a new computer')."
+            )
+        return url
 
     @property
     def outbox_dir(self) -> Path:
