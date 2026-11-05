@@ -271,6 +271,7 @@ function renderLead() {
         <button class="btn" data-call ${l.do_not_contact || !l.best_phone ? "disabled" : ""} title="${l.best_phone ? "" : "No phone that reaches them"}">${I.tel} Call <kbd>c</kbd></button>
         <button class="btn" data-snooze>${I.clock} ${snoozed ? `Until ${esc(at(l.snoozed_until))}` : "Snooze"} <kbd>s</kbd></button>
         <details class="more-menu"><summary class="btn" aria-label="More actions">⋯</summary><div class="menu">
+          <button class="btn ghost" data-to-camp>Add to a campaign…</button>
           <button class="btn ghost" data-advance ${lost || l.status === "customer" ? "disabled" : ""}>Next stage <kbd>→</kbd></button>
           ${lost ? "" : `<button class="btn ghost" data-stage="lost">Mark lost</button>`}
           <button class="btn ghost danger" data-dnc>${l.do_not_contact ? "Allow contact again" : "Do not contact"}</button>
@@ -279,6 +280,7 @@ function renderLead() {
     ${lost ? `<div class="note bad" style="margin:12px 0 0">Marked lost. <button class="btn sm" data-stage="contacted">Reopen</button></div>` : stepper(l)}
     <div class="acts-row" data-snooze-menu hidden style="margin-top:8px;align-items:center"><span class="small muted">Hide from Today until</span>
       <button class="btn sm" data-snooze-to="1">Tomorrow</button><button class="btn sm" data-snooze-to="7">Next week</button><button class="btn sm" data-snooze-to="30">In a month</button>${snoozed ? `<button class="btn sm ghost" data-snooze-to="0">Now</button>` : ""}</div>
+    <div class="acts-row" data-camp-menu hidden style="margin-top:8px;align-items:center"></div>
   </div>
   <div class="dr-b ws-b">
     ${pilotSec(l, f)}
@@ -379,6 +381,20 @@ D().addEventListener("click", async (e) => {
     else if (d.stage) await moveTo(d.stage);
     else if (d.advance !== undefined) await advance();
     else if (d.snooze !== undefined) { const m = D().querySelector("[data-snooze-menu]"); m.hidden = !m.hidden; }
+    else if (d.toCamp !== undefined) {
+      t.closest("details")?.removeAttribute("open");
+      const m = D().querySelector("[data-camp-menu]");
+      const r = await api(`/api/leads/${l.id}/campaigns`);
+      const open = r.items.filter((c) => !c.inside);
+      m.innerHTML = r.why ? `<span class="small muted">Can't be added to a campaign: ${esc(r.why)}.</span>`
+        : !r.items.length ? `<span class="small muted">No campaign yet. <a href="#campaigns">Create one</a>.</span>`
+        : `<span class="small muted">Add to</span>${r.items.map((c) => c.inside ? `<span class="small" style="color:var(--ink)">✓ ${esc(c.name)}</span>` : `<button class="btn sm" data-camp-add="${c.id}">${esc(c.name)}${c.status === "draft" ? " · draft" : ""}</button>`).join("")}${open.length ? "" : ""}`;
+      m.hidden = false;
+    } else if (d.campAdd) {
+      const r = await api(`/api/campaigns/${d.campAdd}/leads`, { method: "POST", body: { lead_ids: [l.id] } });
+      toast(r.added ? `${who(l)} added to the campaign.` : r.notes[0] || "Not added.");
+      if (r.added) { t.replaceWith(Object.assign(document.createElement("span"), { className: "small", textContent: `✓ ${t.textContent.replace(" · draft", "")}`, style: "color:var(--ink)" })); changed(); }
+    }
     else if (d.snoozeTo !== undefined) {
       const days = +d.snoozeTo;
       const until = days ? tomorrowAt(8, 0, days).toISOString() : "";

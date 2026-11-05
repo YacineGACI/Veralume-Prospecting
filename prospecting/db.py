@@ -270,6 +270,7 @@ class Campaign(Base):
     size: Mapped[int | None] = mapped_column(Integer)  # how many leads to contact
     lead_order: Mapped[str | None] = mapped_column(String(12))  # small | score | random
     excluded: Mapped[list[int] | None] = mapped_column(JSON, default=list)  # unticked leads
+    included: Mapped[list[int] | None] = mapped_column(JSON, default=list)  # added by hand
     review: Mapped[str | None] = mapped_column(String(8))  # daily (you approve) | auto
     metric: Mapped[str | None] = mapped_column(String(12))  # reply | interested
     start_on: Mapped[str | None] = mapped_column(String(10))  # YYYY-MM-DD

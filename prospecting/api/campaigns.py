@@ -41,7 +41,7 @@ def _config(s, c: Campaign) -> dict[str, Any]:
     return {
         "id": c.id, "name": c.name, "kind": c.kind, "status": c.status,
         "filters": c.filters or {}, "size": c.size or 0, "order": c.lead_order or "small",
-        "excluded": c.excluded or [], "daily_cap": c.daily_cap or 20,
+        "excluded": c.excluded or [], "included": c.included or [], "daily_cap": c.daily_cap or 20,
         "review": c.review or "daily", "metric": c.metric or "reply",
         "start_on": c.start_on, "followups_on": c.followups_on is not False,
         "started_at": c.started_at, "ended_at": c.ended_at, "created_at": c.created_at,
@@ -81,8 +81,17 @@ class AudienceIn(BaseModel):
     order: str = "small"
     size: int = 50
     excluded: list[int] = []
+    included: list[int] = []
     campaign_id: int | None = None
     needs_lean: bool = False
+    shown: int = 25  # how many of the chosen leads to list
+
+
+def _row(l: Lead) -> dict[str, Any]:
+    """A lead in the campaign list: the summary plus what it does."""
+    tags = set(l.tags or [])
+    return {**summary(l), "specialties": [C.SPECIALTIES[t] for t in C.SPECIALTIES if t in tags][:3],
+            "socials": [k for k in C.SOCIALS if (l.socials or {}).get(k)], "founded": l.founded}  # fmt: skip
 
 
 @router.post("/campaigns/audience")
@@ -92,16 +101,65 @@ def audience(b: AudienceIn) -> dict[str, Any]:
     with session() as s:
         every = C.candidates(s, b.kind, b.filters, b.order, seed=b.campaign_id or 0,
                              campaign_id=b.campaign_id, needs_lean=b.needs_lean)  # fmt: skip
+        hand, blocked = C.hand_picked(s, b.included, b.campaign_id)
+        chosen = C.pick(every, hand, b.size, b.excluded)
         gone = set(b.excluded)
-        keep = [l for l in every if l.id not in gone]
-        chosen = keep[: max(0, b.size)]
         n_dep = Counter((l.postcode or "")[:2] for l in every if l.postcode)
         deps = [{"dep": d, "n": n} for d, n in sorted(n_dep.items(), key=lambda x: (-x[1], x[0]))]
+        hand_ids = {l.id for l in hand}
         return {
-            "matching": len(every), "chosen": len(chosen),
-            "preview": [summary(l) for l in chosen[:12]],
+            "matching": len(every), "chosen": len(chosen), "from_filters": len(chosen) - len(hand),
+            "preview": [{**_row(l), "by_hand": l.id in hand_ids} for l in chosen[: max(1, b.shown)]],
             "excluded": [summary(l) for l in every if l.id in gone][:50],
-            "deps": deps,
+            "blocked": [{**summary(l), "why": why} for l, why in blocked],
+            "deps": deps, "facets": C.facets(s, every),
+        }  # fmt: skip
+
+
+@router.get("/campaigns/lookup")
+def lookup(q: str = "", campaign_id: int | None = None) -> dict[str, Any]:
+    """Find any lead by name, person, town or website to add it by hand, with whether it
+    can be contacted."""
+    q = q.strip()
+    if len(q) < 2:
+        return {"items": []}
+    like = f"%{q}%"
+    with session() as s:
+        rows = list(s.scalars(
+            select(Lead).where(Lead.name.ilike(like) | Lead.city.ilike(like) | Lead.website.ilike(like)
+                               | Lead.legal_name.ilike(like) | Lead.postcode.startswith(q))
+            .order_by(Lead.score.desc()).limit(20)
+        ))  # fmt: skip
+        return {"items": [{**_row(l), "why": C.why_not(s, l, campaign_id)} for l in rows]}
+
+
+class AddLeadsIn(BaseModel):
+    lead_ids: list[int]
+
+
+@router.post("/campaigns/{campaign_id}/leads")
+def add_leads_by_hand(campaign_id: int, b: AddLeadsIn) -> dict[str, Any]:
+    """Add chosen leads: kept in a draft's list, or given a version at once once started."""
+    with session() as s:
+        c = _get(s, campaign_id)
+        n, notes = C.add_specific(s, c, b.lead_ids)
+        s.commit()
+        return {"added": n, "notes": notes, "included": c.included or []}
+
+
+@router.get("/leads/{lead_id}/campaigns")
+def campaigns_for_lead(lead_id: int) -> dict[str, Any]:
+    """The campaigns this lead could be added to, and where it already is."""
+    with session() as s:
+        lead = s.get(Lead, lead_id)
+        if lead is None:
+            raise HTTPException(404, "No such lead")
+        inside = set(s.scalars(select(CampaignLead.campaign_id).where(CampaignLead.lead_id == lead_id)))
+        rows = s.scalars(select(Campaign).where(Campaign.status != "done").order_by(Campaign.id.desc()))
+        return {
+            "why": C.why_not(s, lead),
+            "items": [{"id": c.id, "name": c.name, "status": c.status, "kind": c.kind,
+                       "inside": c.id in inside or lead_id in (c.included or [])} for c in rows],
         }  # fmt: skip
 
 
@@ -124,6 +182,7 @@ class CampaignIn(BaseModel):
     size: int | None = None
     order: str | None = None
     excluded: list[int] | None = None
+    included: list[int] | None = None
     daily_cap: int | None = None
     review: str | None = None
     metric: str | None = None
@@ -149,7 +208,7 @@ def _apply(s, c: Campaign, b: CampaignIn) -> None:
             c.start_on = date.fromisoformat(b.start_on).isoformat() if b.start_on else None
         except ValueError as e:
             raise HTTPException(422, "The start date isn't a date") from e
-    locked = [k for k in ("kind", "filters", "order", "excluded", "metric", "versions")
+    locked = [k for k in ("kind", "filters", "order", "excluded", "included", "metric", "versions")
               if getattr(b, k) is not None]  # fmt: skip
     if locked and not draft:
         raise HTTPException(409, "This campaign has started: who it reaches and its emails "
@@ -170,6 +229,8 @@ def _apply(s, c: Campaign, b: CampaignIn) -> None:
         c.lead_order = b.order
     if b.excluded is not None:
         c.excluded = sorted(set(b.excluded))
+    if b.included is not None:
+        c.included = list(dict.fromkeys(b.included))
     if b.metric is not None:
         if b.metric not in ("reply", "interested"):
             raise HTTPException(422, "metric is reply or interested")

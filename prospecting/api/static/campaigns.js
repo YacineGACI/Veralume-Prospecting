@@ -66,14 +66,15 @@ export const campaignsView = {
 
 // --- one campaign ------------------------------------------------------------------------
 
-const B = { c: null, aud: null, step: "who", ver: 0, depOptions: [], dossiers: null, timer: null, audTimer: null };
+const B = { c: null, aud: null, step: "who", ver: 0, depOptions: [], dossiers: null, timer: null, audTimer: null, shown: 25, look: [], lookQ: "", lookTimer: null };
 
 export const campaignView = {
   async render(arg) {
     const id = +arg;
     if (!id) { location.hash = "campaigns"; return; }
     const c = await api(`/api/campaigns/${id}`);
-    if (B.c?.id !== id) Object.assign(B, { step: "who", ver: 0, depOptions: [], aud: null });
+    if (B.c?.id !== id) Object.assign(B, { step: "who", ver: 0, depOptions: [], aud: null, shown: 25, look: [], lookQ: "" });
+    c.included = c.included || [];
     B.c = c;
     if (c.status === "draft") {
       B.dossiers = (await api("/api/dossiers")).items;
@@ -89,7 +90,7 @@ export const campaignView = {
 function payload() {
   const c = B.c;
   return {
-    name: c.name, kind: c.kind, filters: c.filters, size: c.size, order: c.order, excluded: c.excluded,
+    name: c.name, kind: c.kind, filters: c.filters, size: c.size, order: c.order, excluded: c.excluded, included: c.included,
     daily_cap: c.daily_cap, review: c.review, metric: c.metric, start_on: c.start_on || "", followups_on: c.followups_on,
     versions: c.versions.map((v) => ({ id: v.id || null, name: v.name, subject: v.subject, body: v.body, asset_ids: v.asset_ids, attach_photo: v.attach_photo })),
   };
@@ -116,7 +117,7 @@ function refreshAudience(first = false) {
   B.audTimer = setTimeout(async () => {
     const c = B.c;
     try {
-      B.aud = await api("/api/campaigns/audience", { method: "POST", body: { kind: c.kind, filters: c.filters, order: c.order, size: c.size, excluded: c.excluded, campaign_id: c.id, needs_lean: usesLean(c.versions) } });
+      B.aud = await api("/api/campaigns/audience", { method: "POST", body: { kind: c.kind, filters: c.filters, order: c.order, size: c.size, excluded: c.excluded, included: c.included, shown: B.shown, campaign_id: c.id, needs_lean: usesLean(c.versions) } });
       if (!(c.filters.deps || []).length) B.depOptions = B.aud.deps;
       if (B.step === "who") drawStep(); else drawSummary();
       drawSteps();
@@ -157,52 +158,184 @@ function drawSteps() {
 function drawStep() {
   const el = $("[data-step]");
   if (!el) return;
+  // Redrawing replaces the inputs: keep the one being typed in focused, caret in place.
+  const focus = document.activeElement?.id && el.contains(document.activeElement) ? document.activeElement : null;
+  const keep = focus && { id: focus.id, s: focus.selectionStart, e: focus.selectionEnd };
   const i = ["who", "emails", "sending"].indexOf(B.step);
   el.innerHTML = (B.step === "who" ? stepWho() : B.step === "emails" ? stepEmails() : stepSending())
     + `<div class="cb-nav">${i ? `<button class="btn" data-go="${["who", "emails", "sending"][i - 1]}">Back</button>` : ""}<span class="grow"></span>
        ${i < 2 ? `<button class="btn primary" data-go="${["who", "emails", "sending"][i + 1]}">Next: ${["", "the email", "sending"][i + 1]} →</button>` : `<button class="btn primary" data-start>Review and start</button>`}</div>`;
   if (B.step === "emails") wireEmails();
+  if (keep) {
+    const again = document.getElementById(keep.id);
+    if (again) { again.focus(); try { again.setSelectionRange(keep.s, keep.e); } catch {} }
+  }
 }
 
-const FILTERS = [
-  ["first_name", "have a first name", (f) => !!f.first_name, (f, on) => (f.first_name = on || undefined)],
-  ["small", "are new or one-person businesses", (f) => !!f.small, (f, on) => (f.small = on || undefined)],
-  ["website", "have a website", (f) => !!f.website, (f, on) => (f.website = on || undefined)],
-  ["lean", "have leaning photos (1° or more)", (f) => (f.lean_min || 0) >= 1, (f, on) => (f.lean_min = on ? 1 : undefined)],
-  ["score", "score 60 or more", (f) => (f.score_min || 0) >= 60, (f, on) => (f.score_min = on ? 60 : undefined)],
-];
+// --- step 1: who ---------------------------------------------------------------------------
+// Filters live in c.filters (see campaigns.candidates). Chips show, from the facet counts,
+// how many of the current matches each one would keep.
+
+const SMALL_LABEL = { new_business: "new business", sole_trader: "sole trader", recent_profile: "recent profile", few_reviews: "few reviews", social_only: "social only" };
+const NAMES = {
+  first_name: "first name known", email_personal: "a person's email", phone: "a phone to call",
+  small: "small or new", solo: "works alone", measured: "photos measured", shortlisted: "shortlisted by you",
+};
+const n0 = (n) => (n == null ? "" : ` <span class="fn">${Number(n).toLocaleString("en")}</span>`);
+const PRESETS = {
+  photographer: [
+    ["Small and new near Strasbourg", { small: true, max_km: 60 }],
+    ["Their photos lean", { measured: true, lean_min: 1 }],
+    ["Holiday lets and Airbnb", { tags_any: ["short_stay"] }],
+    ["Luxury properties", { tags_any: ["prestige"] }],
+    ["Solo, with a phone to call", { solo: true, phone: true }],
+    ["On Instagram, a person's email", { socials: ["instagram"], email_personal: true }],
+  ],
+  agency: [
+    ["Independent agencies", { network: "independent" }],
+    ["Their photos lean", { measured: true, lean_min: 1 }],
+    ["Luxury agencies", { tags_any: ["prestige"] }],
+    ["Holiday lets", { tags_any: ["short_stay"] }],
+    ["Small, near Strasbourg", { solo: true, max_km: 60 }],
+    ["A person's email", { email_personal: true, first_name: true }],
+  ],
+  independent_agent: [
+    ["Near Strasbourg", { max_km: 60 }],
+    ["A person's email", { email_personal: true }],
+  ],
+};
+const TAGS = {};
+const tagName = (t) => (TAGS[t] || t.replace("_", " ")).toLowerCase();
+
+/** The active filters as removable chips: [label, key, value-for-lists]. */
+function activeFilters(f) {
+  const out = [];
+  for (const k of Object.keys(NAMES)) if (f[k]) out.push([NAMES[k], k]);
+  if (f.website === "yes" || f.website === true) out.push(["has a website", "website"]);
+  if (f.website === "no") out.push(["no website", "website"]);
+  (f.socials || []).forEach((s) => out.push([`on ${s[0].toUpperCase() + s.slice(1)}`, "socials", s]));
+  (f.tags_any || []).forEach((t) => out.push([`does ${tagName(t)}`, "tags_any", t]));
+  (f.tags_none || []).forEach((t) => out.push([`not ${tagName(t)}`, "tags_none", t]));
+  (f.deps || []).forEach((d) => out.push([`in ${d}`, "deps", d]));
+  (f.networks || []).forEach((n) => out.push([n, "networks", n]));
+  if (f.network === "independent") out.push(["independent (no network)", "network"]);
+  if (f.network === "network") out.push(["in a network", "network"]);
+  if (f.max_km) out.push([`within ${f.max_km} km`, "max_km"]);
+  if (f.founded_years) out.push([`founded ≤ ${f.founded_years} year${f.founded_years > 1 ? "s" : ""} ago`, "founded_years"]);
+  if (f.lean_min) out.push([`photos lean ${String(f.lean_min).replace(".", ",")}°+`, "lean_min"]);
+  if (f.score_min) out.push([`score ${f.score_min}+`, "score_min"]);
+  if (f.town) out.push([`town: “${f.town}”`, "town"]);
+  if (f.q) out.push([`search: “${f.q}”`, "q"]);
+  return out;
+}
+
+function chip(label, attrs, on, n) {
+  return `<button class="fchip" type="button" ${attrs} aria-pressed="${!!on}">${on ? "✓ " : ""}${label}${on ? "" : n0(n)}</button>`;
+}
+const choice = (key, val, label, f, n) => chip(label, `data-fset="${key}" data-fval="${val}"`, String(f[key] ?? "") === String(val), n);
+const sub = (t) => `<span class="small muted" style="text-transform:none;letter-spacing:0;font-weight:400">${t}</span>`;
 
 function stepWho() {
-  const c = B.c, f = c.filters, a = B.aud;
-  // The most common départements as buttons, the others in a list.
+  const c = B.c, f = c.filters, a = B.aud, fa = a?.facets || {};
+  (fa.tags || []).forEach((t) => (TAGS[t.tag] = t.label));
   const opts = B.depOptions;
   const top = opts.slice(0, 6).map((x) => x.dep);
-  const shown = [...new Set([...top, ...(f.deps || [])])];
-  const rest = opts.filter((x) => !shown.includes(x.dep));
-  const count = (d) => opts.find((x) => x.dep === d)?.n;
+  const shownDeps = [...new Set([...top, ...(f.deps || [])])];
+  const rest = opts.filter((x) => !shownDeps.includes(x.dep));
+  const depN = (d) => opts.find((x) => x.dep === d)?.n;
   const max = Math.max(a?.matching || 0, c.size, 10);
   const lean = usesLean(c.versions);
+  const act = activeFilters(f);
+  const agency = c.kind === "agency";
+  const tri = (t) => ((f.tags_any || []).includes(t) ? "any" : (f.tags_none || []).includes(t) ? "none" : "");
+  const tagChip = (t) => {
+    const st = tri(t.tag);
+    return `<button class="fchip${st === "none" ? " no" : ""}" type="button" data-ftag="${t.tag}" aria-pressed="${!!st}" title="Once: only those who do it. Twice: leave them out. Three times: either.">${st === "any" ? "✓ " : st === "none" ? "✕ " : ""}${esc(t.label)}${st ? "" : n0(t.n)}</button>`;
+  };
+  const allTags = [...(fa.tags || []), ...[...(f.tags_any || []), ...(f.tags_none || [])].filter((t) => !(fa.tags || []).some((x) => x.tag === t)).map((t) => ({ tag: t, label: TAGS[t] || t }))];
+  const list = a?.preview || [];
+  const hand = list.filter((l) => l.by_hand).length || (c.included || []).length;
   return `<h2>Who do you want to reach?</h2>
-    <p class="muted">The count updates as you click. Leads already contacted, marked do-not-contact, without an address of their own, or waiting in another campaign are always left out.</p>
+    <p class="muted">Every click updates the count. The grey number on a filter is how many of the current matches it would keep. Leads already contacted, do-not-contact, without an address of their own, or waiting in another campaign are always left out.</p>
     <div class="cb-sec"><h4>Segment</h4><div class="seg" role="group" aria-label="Segment">${SEGS.map((k) => `<button data-kind="${k}" aria-pressed="${c.kind === k}">${KINDS_PL[k]}</button>`).join("")}</div></div>
-    <div class="cb-sec"><h4>Only leads who…</h4><div class="chips">
-      ${FILTERS.map(([k, label, get]) => `<button class="fchip" data-filter="${k}" aria-pressed="${get(f)}">${get(f) ? "✓" : "+"} ${label}</button>`).join("")}
-      <label class="fchip sel">are within <select data-km aria-label="Distance">${[["", "any distance"], [20, "20 km"], [40, "40 km"], [60, "60 km"], [100, "100 km"]].map(([v, t]) => `<option value="${v}" ${String(f.max_km || "") === String(v) ? "selected" : ""}>${t}</option>`).join("")}</select></label></div>
-      ${opts.length > 1 || (f.deps || []).length ? `<div class="chips" style="margin-top:8px"><span class="small muted" style="align-self:center">In the département</span>${shown.map((d) => `<button class="fchip" data-dep="${esc(d)}" aria-pressed="${(f.deps || []).includes(d)}">${esc(d)}${count(d) && !(f.deps || []).length ? ` <span class="small muted">· ${count(d)}</span>` : ""}</button>`).join("")}
-        ${rest.length ? `<select class="dep-more" data-dep-add aria-label="Another département"><option value="">+ another (${rest.length})</option>${rest.map((x) => `<option value="${esc(x.dep)}">${esc(x.dep)} · ${x.n}</option>`).join("")}</select>` : ""}
-        ${(f.deps || []).length ? `<button class="linkish small" data-dep-clear>any département</button>` : ""}</div>` : ""}
-      ${lean ? `<div class="note info" style="margin-top:10px"><span>${c.versions.filter((v) => `${v.subject} ${v.body}`.includes("{lean}")).map((v, i) => `Version ${LET[c.versions.indexOf(v)] || i + 1}`).join(" and ")} quotes their measured lean, so only leads with a measured lean of 1° or more are counted. <button class="linkish" data-go="emails">Change the email</button></span></div>` : ""}</div>
+
+    <div class="cb-sec"><h4>Start from ${sub("a ready-made selection, then refine it")}</h4><div class="chips">${(PRESETS[c.kind] || []).map(([t], i) => `<button class="fchip preset" type="button" data-preset="${i}">${esc(t)}</button>`).join("")}</div></div>
+
+    <div class="cb-active" aria-live="polite">
+      <span class="cb-count"><b>${a ? a.matching.toLocaleString("en") : "…"}</b> match</span>
+      ${act.length ? act.map(([t, k, v]) => `<button class="achip" type="button" data-fdel="${k}" ${v != null ? `data-fval="${esc(v)}"` : ""} aria-label="Remove the filter ${esc(t)}">${esc(t)} <span aria-hidden="true">×</span></button>`).join("") + `<button class="linkish small" type="button" data-fclear>Clear all</button>` : `<span class="small muted">No filter yet: every reachable lead in this segment is in.</span>`}
+    </div>
+
+    <div class="cb-filters">
+      <details class="fgrp" open><summary>Where</summary>
+        <div class="chips">
+          <label class="fchip sel">within <select data-km aria-label="Distance from Strasbourg">${[["", "any distance"], [10, "10 km"], [20, "20 km"], [40, "40 km"], [60, "60 km"], [100, "100 km"], [200, "200 km"]].map(([v, t]) => `<option value="${v}" ${String(f.max_km || "") === String(v) ? "selected" : ""}>${t}</option>`).join("")}</select> of Strasbourg</label>
+          <label class="fchip sel ftext">town <input id="f-town" data-ftext="town" value="${esc(f.town || "")}" placeholder="e.g. Colmar" autocomplete="off"></label>
+        </div>
+        ${opts.length > 1 || (f.deps || []).length ? `<div class="chips"><span class="small muted">Département</span>${shownDeps.map((d) => chip(esc(d), `data-dep="${esc(d)}"`, (f.deps || []).includes(d), (f.deps || []).length ? null : depN(d))).join("")}
+          ${rest.length ? `<select class="dep-more" data-dep-add aria-label="Another département"><option value="">+ another (${rest.length})</option>${rest.map((x) => `<option value="${esc(x.dep)}">${esc(x.dep)} · ${x.n}</option>`).join("")}</select>` : ""}</div>` : ""}
+      </details>
+
+      <details class="fgrp" open><summary>How you can reach them</summary><div class="chips">
+        ${chip("first name known", `data-fb="first_name"`, f.first_name, fa.first_name)}
+        ${chip("a person's email, not contact@", `data-fb="email_personal"`, f.email_personal, fa.email_personal)}
+        ${chip("a phone to call", `data-fb="phone"`, f.phone, fa.phone)}
+        ${choice("website", "yes", "has a website", f, fa.website_yes)}
+        ${choice("website", "no", "no website", f, fa.website_no)}
+        ${["instagram", "facebook", "linkedin"].map((s) => chip(`on ${s[0].toUpperCase() + s.slice(1)}`, `data-flist="socials" data-fval="${s}"`, (f.socials || []).includes(s), fa.socials?.[s])).join("")}
+      </div></details>
+
+      <details class="fgrp" open><summary>The business</summary><div class="chips">
+        ${chip("small or new", `data-fb="small"`, f.small, fa.small)}
+        ${chip("works alone", `data-fb="solo"`, f.solo, fa.solo)}
+        ${[1, 2, 5].map((y) => choice("founded_years", y, `founded ≤ ${y} year${y > 1 ? "s" : ""} ago`, f, fa.founded?.[y])).join("")}
+        ${agency ? choice("network", "independent", "independent", f, fa.independent) + choice("network", "network", "in a network", f, fa.network) : ""}
+        ${chip("shortlisted by you", `data-fb="shortlisted"`, f.shortlisted, fa.shortlisted)}
+        ${agency && (fa.networks || []).length ? `<select class="dep-more" data-fnet aria-label="Only this network"><option value="">+ a network</option>${fa.networks.map((x) => `<option value="${esc(x.name)}">${esc(x.name)} · ${x.n}</option>`).join("")}</select>` : ""}
+      </div></details>
+
+      ${allTags.length ? `<details class="fgrp" open><summary>What they do ${sub("once: only them · twice: leave them out")}</summary><div class="chips">${allTags.map(tagChip).join("")}</div></details>` : ""}
+
+      <details class="fgrp" open><summary>Their photos and score</summary><div class="chips">
+        ${chip("photos measured", `data-fb="measured"`, f.measured, fa.measured)}
+        ${[0.5, 1, 2, 3].map((v) => choice("lean_min", v, `lean ${String(v).replace(".", ",")}°+`, f, fa.lean?.[v])).join("")}
+        <span class="small muted">score</span>${[40, 60, 80].map((v) => choice("score_min", v, `${v}+`, f, fa.score?.[v])).join("")}
+      </div></details>
+
+      <details class="fgrp" ${f.q ? "open" : ""}><summary>Search their name, people, town, website or your notes</summary>
+        <input class="input" id="f-q" data-ftext="q" value="${esc(f.q || "")}" placeholder="e.g. drone, Marie, immo" autocomplete="off" style="width:100%">
+      </details>
+      ${lean ? `<div class="note info"><span>${c.versions.filter((v) => `${v.subject} ${v.body}`.includes("{lean}")).map((v) => `Version ${LET[c.versions.indexOf(v)]}`).join(" and ")} quotes their measured lean, so only leads with a lean of 1° or more are counted. <button class="linkish" data-go="emails">Change the email</button></span></div>` : ""}
+    </div>
+
+    <div class="cb-sec"><h4><label for="f-add">Add someone by hand</label> ${sub("any lead, even one the filters leave out")}</h4>
+      <div class="search"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="M20 20l-4.5-4.5"/></svg><input id="f-add" data-lookup value="${esc(B.lookQ || "")}" placeholder="Name, town, website or postcode" autocomplete="off"></div>
+      ${B.look?.length ? `<div class="cb-list cb-look">${B.look.map((l) => {
+        const inside = (c.included || []).includes(l.id);
+        return `<div class="cb-row"><span></span><span class="nm"><b>${esc(l.person || l.name)}</b>${l.person ? ` <span class="muted">· ${esc(l.name)}</span>` : ""}</span><span class="muted">${esc(l.city || "")}${l.dep ? ` (${esc(l.dep)})` : ""}</span><span class="small muted">${esc(KINDS_PL[l.kind] || l.kind)}</span>
+          <span class="small ${l.why ? "muted" : ""}">${l.why ? `Can't: ${esc(l.why)}` : l.kind !== c.kind ? "another segment: check your email fits" : ""}</span>
+          ${inside ? `<span class="small" style="color:var(--ink)">added</span>` : l.why ? `<span></span>` : `<button class="btn sm" type="button" data-hand="${l.id}">Add</button>`}</div>`;
+      }).join("")}</div>` : (B.lookQ || "").length >= 2 ? `<p class="small muted">No lead matches “${esc(B.lookQ)}”.</p>` : ""}
+      ${a?.blocked?.length ? `<div class="note warn" style="margin-top:8px"><span>Added by hand but can't be written to: ${a.blocked.map((l) => `${esc(l.name)} (${esc(l.why)}) <button class="linkish small" data-unhand="${l.id}">remove</button>`).join(" · ")}</span></div>` : ""}
+    </div>
+
     <div class="cb-two">
-      <div class="cb-sec"><h4><label for="cb-size">How many to contact</label></h4>
+      <div class="cb-sec"><h4><label for="cb-size">How many from the filters</label></h4>
         <div class="cb-big"><input type="number" id="cb-size" data-size min="1" max="${max}" value="${c.size}"><span class="muted">of ${a ? a.matching.toLocaleString("en") : "…"} matching</span></div>
-        <input type="range" data-size min="1" max="${max}" value="${Math.min(c.size, max)}" aria-label="How many to contact" style="width:100%;accent-color:var(--emerald)">
-        <p class="small muted" style="margin:4px 0 0">${a && a.chosen < c.size ? `Only ${a.chosen} match, so that's all it will reach. ` : ""}At ${c.daily_cap} a day: about ${plural(workdays(a?.chosen ?? c.size, c.daily_cap), "working day")}.${c.versions.length > 1 ? ` That's ${Math.floor((a?.chosen ?? c.size) / c.versions.length)} per version.` : ""}</p></div>
+        <input type="range" data-size min="1" max="${max}" value="${Math.min(c.size, max)}" aria-label="How many from the filters" style="width:100%;accent-color:var(--emerald)">
+        <p class="small muted" style="margin:4px 0 0">${a && hand ? `Plus ${plural(a.chosen - a.from_filters, "lead")} added by hand: ${a.chosen} in all. ` : ""}${a && a.from_filters < c.size ? `Only ${a.from_filters} match, so that's all the filters give. ` : ""}At ${c.daily_cap} a day: about ${plural(workdays(a?.chosen ?? c.size, c.daily_cap), "working day")}.${c.versions.length > 1 ? ` About ${Math.floor((a?.chosen ?? c.size) / c.versions.length)} per version.` : ""}</p></div>
       <div class="cb-sec"><h4>Who goes first</h4><div class="cb-opts">${[["small", "Small and new first", "then by score"], ["score", "Best score first", ""], ["random", "At random", "fairest when comparing versions"]].map(([k, t, h]) => `<button data-order="${k}" aria-pressed="${c.order === k}"><b>${t}</b> <span class="small muted">${h}</span></button>`).join("")}</div></div>
     </div>
-    <div class="cb-sec"><h4>The first ones <span class="small muted" style="text-transform:none;letter-spacing:0;font-weight:400">untick anyone you'd rather call, or skip</span></h4>
-      ${!a ? `<p class="muted small">Counting…</p>` : !a.preview.length ? `<div class="note warn">No lead matches. Remove a filter above.</div>`
-        : `<div class="cb-list">${a.preview.map((l) => `<label class="cb-row"><input type="checkbox" class="chk" data-keep="${l.id}" checked><span class="nm"><b>${esc(l.person || l.name)}</b>${l.person ? ` <span class="muted">· ${esc(l.name)}</span>` : ""}</span><span class="muted">${esc(l.city || "")}${l.dep ? ` (${esc(l.dep)})` : ""}</span><span class="mono small">${l.lean_median != null ? `${l.lean_median.toFixed(1).replace(".", ",")}°` : ""}</span><span class="small" style="color:var(--ink)">${esc((l.small_new || [])[0]?.replace("_", " ") || "")}</span><button class="linkish small" data-peek="${l.id}" type="button">open</button></label>`).join("")}</div>
-           ${a.chosen > a.preview.length ? `<p class="small muted" style="margin:6px 0 0">…and ${a.chosen - a.preview.length} more, in this order.</p>` : ""}`}
+
+    <div class="cb-sec"><h4>Who will get it ${sub("in sending order · untick anyone to leave them out")}</h4>
+      ${!a ? `<p class="muted small">Counting…</p>` : !list.length ? `<div class="note warn">No lead matches. Remove a filter above, or add someone by hand.</div>`
+        : `<div class="cb-list cb-who">${list.map((l, i) => `<label class="cb-row"><input type="checkbox" class="chk" data-keep="${l.id}" ${l.by_hand ? `data-byhand="1"` : ""} checked aria-label="Keep ${esc(l.person || l.name)}">
+            <span class="nm"><span class="dim mono small">${i + 1}</span> <b>${esc(l.person || l.name)}</b>${l.person ? ` <span class="muted">· ${esc(l.name)}</span>` : ""}${l.by_hand ? ` <span class="pill st-pilot">by hand</span>` : ""}</span>
+            <span class="muted">${esc(l.city || "")}${l.dep ? ` (${esc(l.dep)})` : ""}</span>
+            <span class="mono small">${l.lean_median != null ? `${l.lean_median.toFixed(1).replace(".", ",")}°` : ""}</span>
+            <span class="small tagline">${[...(l.small_new || []).slice(0, 1).map((t) => SMALL_LABEL[t] || t), ...(l.specialties || [])].map((t) => `<span>${esc(t)}</span>`).join("")}${l.phone_ok ? `<span title="Has a phone">☎</span>` : ""}</span>
+            <button class="linkish small" data-peek="${l.id}" type="button">open</button></label>`).join("")}</div>
+          ${a.chosen > list.length ? `<p class="small muted" style="margin:8px 0 0">Showing ${list.length} of ${a.chosen}. <button class="linkish small" type="button" data-more-list>Show ${Math.min(50, a.chosen - list.length)} more</button> · <button class="linkish small" type="button" data-all-list>show all</button></p>` : ""}`}
       ${a?.excluded.length ? `<p class="small muted" style="margin:8px 0 0">Left out by you: ${a.excluded.map((l) => `${esc(l.person || l.name)} <button class="linkish small" data-unexclude="${l.id}">put back</button>`).join(" · ")}</p>` : ""}</div>`;
 }
 
@@ -295,15 +428,15 @@ function drawSummary() {
   if (!el) return;
   const c = B.c, a = B.aud, f = c.filters;
   const chosen = a ? a.chosen : c.size;
-  const filt = FILTERS.filter(([, , get]) => get(f)).map(([, label]) => label);
-  if (f.max_km) filt.push(`within ${f.max_km} km`);
-  if ((f.deps || []).length) filt.push(`in ${f.deps.join(", ")}`);
+  const filt = activeFilters(f).map(([label]) => label);
+  const nHand = a ? a.chosen - a.from_filters : (c.included || []).length;
+  if (nHand) filt.push(`plus ${nHand} added by hand`);
   const nImg = new Set(c.versions.flatMap((v) => v.asset_ids)).size;
   const probs = problems();
   const blocking = probs.filter((p) => !p[2]);
   el.innerHTML = `<section class="cb-sum"><h4>This campaign</h4>
     <div class="cb-big2"><div><b>${chosen.toLocaleString("en")}</b><span>leads</span></div><div><b>${workdays(chosen, c.daily_cap)}</b><span>working days</span></div></div>
-    <dl><dt>Who</dt><dd>${esc(KINDS_PL[c.kind])}${filt.length ? ` who ${esc(filt.join(", "))}` : ""}</dd>
+    <dl><dt>Who</dt><dd>${esc(KINDS_PL[c.kind])}${filt.length ? `: ${esc(filt.join(" · "))}` : ""}</dd>
       <dt>Order</dt><dd>${esc({ small: "Small and new first", score: "Best score first", random: "At random" }[c.order])}</dd>
       <dt>Emails</dt><dd>${c.versions.length > 1 ? `${c.versions.length} versions, ${Math.round(100 / c.versions.length)} % each` : "One version"}${nImg ? ` · ${plural(nImg, "image")}` : ""}${c.followups_on ? " · follow-ups" : ""}</dd>
       <dt>Sending</dt><dd>${c.daily_cap} a day${c.start_on ? `, from ${esc(new Date(c.start_on).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))}` : ""} · ${c.review === "auto" ? "approved once" : "you approve each morning"}</dd></dl>
@@ -355,6 +488,24 @@ function onBuilderInput(e) {
     if (t.dataset.v === "body" && usesLean(c.versions) !== B.lean) { B.lean = usesLean(c.versions); refreshAudience(); }
     return;
   }
+  if (t.dataset.ftext) {
+    const v = t.value.trim();
+    c.filters[t.dataset.ftext] = v || undefined;
+    save();
+    clearTimeout(B.textTimer);
+    B.textTimer = setTimeout(refreshAudience, 300);
+    return;
+  }
+  if (t.matches("[data-lookup]")) {
+    B.lookQ = t.value;
+    clearTimeout(B.lookTimer);
+    B.lookTimer = setTimeout(async () => {
+      const q = B.lookQ.trim();
+      B.look = q.length >= 2 ? (await api(`/api/campaigns/lookup?q=${encodeURIComponent(q)}&campaign_id=${c.id}`)).items : [];
+      if (B.step === "who") drawStep();
+    }, 220);
+    return;
+  }
   if (t.matches("[data-size]")) {
     c.size = Math.max(1, +t.value || 1);
     for (const o of document.querySelectorAll("[data-size]")) if (o !== t) o.value = c.size;
@@ -377,12 +528,26 @@ async function onBuilderClick(e) {
     location.hash = "campaigns";
     return;
   }
-  if (d.kind) { c.kind = d.kind; f.deps = undefined; B.depOptions = []; c.excluded = []; }
-  else if (d.filter) { const def = FILTERS.find((x) => x[0] === d.filter); def[3](f, !def[2](f)); }
-  else if (d.dep) { const s = new Set(f.deps || []); s.has(d.dep) ? s.delete(d.dep) : s.add(d.dep); f.deps = s.size ? [...s] : undefined; }
-  else if (d.depClear !== undefined) f.deps = undefined;
+  const toggleIn = (key, val) => { const s = new Set(f[key] || []); s.has(val) ? s.delete(val) : s.add(val); f[key] = s.size ? [...s] : undefined; };
+  const WHO = ["kind", "dep", "order", "unexclude", "fb", "fset", "flist", "ftag", "fdel", "fclear", "preset", "hand", "unhand", "moreList", "allList"];
+  if (d.kind) { c.kind = d.kind; c.filters = {}; B.depOptions = []; c.excluded = []; }
+  else if (d.preset) { Object.assign(f, structuredClone((PRESETS[c.kind] || [])[+d.preset][1])); }
+  else if (d.fb) f[d.fb] = f[d.fb] ? undefined : true;
+  else if (d.fset) { const v = isNaN(+d.fval) ? d.fval : +d.fval; f[d.fset] = String(f[d.fset] ?? "") === String(d.fval) ? undefined : v; }
+  else if (d.flist) toggleIn(d.flist, d.fval);
+  else if (d.ftag) {
+    const t0 = d.ftag, inAny = (f.tags_any || []).includes(t0), inNone = (f.tags_none || []).includes(t0);
+    if (inAny) { toggleIn("tags_any", t0); toggleIn("tags_none", t0); } else if (inNone) toggleIn("tags_none", t0); else toggleIn("tags_any", t0);
+  } else if (d.fdel) {
+    if (d.fval !== undefined && Array.isArray(f[d.fdel])) toggleIn(d.fdel, d.fval); else f[d.fdel] = undefined;
+  } else if (d.fclear !== undefined) c.filters = {};
+  else if (d.dep) toggleIn("deps", d.dep);
   else if (d.order) c.order = d.order;
   else if (d.unexclude) c.excluded = c.excluded.filter((x) => x !== +d.unexclude);
+  else if (d.hand) { c.included = [...new Set([...c.included, +d.hand])]; c.excluded = c.excluded.filter((x) => x !== +d.hand); toast("Added. They'll be written to first."); }
+  else if (d.unhand) c.included = c.included.filter((x) => x !== +d.unhand);
+  else if (d.moreList !== undefined) { B.shown += 50; refreshAudience(); return; }
+  else if (d.allList !== undefined) { B.shown = 100000; refreshAudience(); return; }
   else if (d.peek) { openLead(+d.peek); return; }
   else if (d.ver) { B.ver = +d.ver; drawStep(); return; }
   else if (d.addVer !== undefined) {
@@ -418,7 +583,7 @@ async function onBuilderClick(e) {
     return;
   } else return;
   save();
-  if (["kind", "filter", "dep", "depClear", "order", "unexclude"].some((k) => d[k] !== undefined)) { drawStep(); refreshAudience(); }
+  if (WHO.some((k) => d[k] !== undefined)) { drawStep(); refreshAudience(); }
   else { drawSteps(); drawStep(); }
 }
 
@@ -427,7 +592,14 @@ function onBuilderChange(e) {
   if (!c || c.status !== "draft") return;
   if (t.matches("[data-km]")) { c.filters.max_km = t.value ? +t.value : undefined; save(); refreshAudience(); }
   else if (t.matches("[data-dep-add]") && t.value) { c.filters.deps = [...new Set([...(c.filters.deps || []), t.value])]; save(); drawStep(); refreshAudience(); }
-  else if (t.matches("[data-keep]")) { c.excluded = [...new Set([...c.excluded, +t.dataset.keep])]; save(); refreshAudience(); }
+  else if (t.matches("[data-fnet]") && t.value) { c.filters.networks = [...new Set([...(c.filters.networks || []), t.value])]; save(); drawStep(); refreshAudience(); }
+  else if (t.matches("[data-keep]")) {
+    const id = +t.dataset.keep;
+    // Unticking someone added by hand takes them off the hand-picked list; anyone else is left out.
+    if (t.dataset.byhand) c.included = c.included.filter((x) => x !== id);
+    else c.excluded = [...new Set([...c.excluded, id])];
+    save(); refreshAudience();
+  }
   else if (t.matches("[data-followups]")) { c.followups_on = t.checked; save(); drawSummary(); }
 }
 
@@ -516,10 +688,31 @@ function renderResults(c) {
 
 function addLeads(c) {
   const sheet = openModal(`<div class="sheet-h"><h2>Add leads to “${esc(c.name)}”</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
-    <form class="sheet-b"><label>How many more<input class="input" type="number" name="n" min="1" max="1000" value="${Math.max(10, c.daily_cap * 5)}" autofocus></label>
-    <p class="small muted" style="margin:0">The next ones matching the same filters, in the same order.${c.results.test?.status === "stopped" ? " They get the winning version." : " They get the versions in equal shares."}</p>
-    <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Add</button></div></form>`, { narrow: true });
-  sheet.onclick = (e) => { if (e.target.closest("[data-close]")) closeModal(); };
+    <form class="sheet-b"><label>The next ones matching its filters: how many<input class="input" type="number" name="n" min="1" max="1000" value="${Math.max(10, c.daily_cap * 5)}"></label>
+    <p class="small muted" style="margin:0">In the same order.${c.results.test?.status === "stopped" ? " They get the winning version." : " They get the versions in equal shares."}</p>
+    <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Add them</button></div></form>
+    <div class="sheet-b" style="border-top:1px solid var(--line)"><label for="add-q"><b>Or someone in particular</b></label>
+      <input class="input" id="add-q" placeholder="Name, town, website or postcode" autocomplete="off" autofocus>
+      <div data-found class="cb-list cb-look" hidden></div></div>`, { narrow: true });
+  let timer;
+  const find = async () => {
+    const q = $("#add-q", sheet).value.trim(), box = $("[data-found]", sheet);
+    const items = q.length >= 2 ? (await api(`/api/campaigns/lookup?q=${encodeURIComponent(q)}&campaign_id=${c.id}`)).items : [];
+    box.hidden = !items.length;
+    box.innerHTML = items.map((l) => `<div class="cb-row" style="grid-template-columns:minmax(0,1.4fr) minmax(0,1fr) auto"><span class="nm"><b>${esc(l.person || l.name)}</b>${l.person ? ` <span class="muted">· ${esc(l.name)}</span>` : ""}<br><span class="small muted">${esc(l.city || "")} · ${esc(KINDS_PL[l.kind] || l.kind)}</span></span>
+      <span class="small muted">${l.why ? `Can't: ${esc(l.why)}` : ""}</span>${l.why ? "<span></span>" : `<button class="btn sm" type="button" data-pick="${l.id}">Add</button>`}</div>`).join("");
+  };
+  $("#add-q", sheet).addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(() => find().catch(fail), 220); });
+  sheet.onclick = async (e) => {
+    if (e.target.closest("[data-close]")) return closeModal();
+    const b = e.target.closest("[data-pick]");
+    if (!b) return;
+    await busy(b, async () => {
+      const r = await api(`/api/campaigns/${c.id}/leads`, { method: "POST", body: { lead_ids: [+b.dataset.pick] } });
+      if (r.added) { b.replaceWith(Object.assign(document.createElement("span"), { className: "small", textContent: "added", style: "color:var(--ink)" })); changed(); }
+      else toast(r.notes[0] || "Not added.");
+    });
+  };
   sheet.onsubmit = async (e) => {
     e.preventDefault();
     await busy(e.target.querySelector(".primary"), async () => {

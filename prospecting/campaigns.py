@@ -13,6 +13,7 @@ after each first email and always wait for you.
 from __future__ import annotations
 
 import random
+import unicodedata
 import uuid
 from collections import Counter, defaultdict
 from datetime import date, timedelta
@@ -22,11 +23,12 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from prospecting import experiments, mailer
-from prospecting.contacts import shared_contacts, usable_emails
+from prospecting.contacts import shared_contacts, usable_emails, usable_phones
 from prospecting.db import (
     Campaign, CampaignLead, Experiment, Lead, Message, Template, now,
 )  # fmt: skip
 from prospecting.mailer import day_start, iso, local
+from prospecting.text import email_is_personal
 
 SMALL_NEW = {"new_business", "sole_trader", "recent_profile", "few_reviews", "social_only"}
 ORDERS = {"small": "Small and new first", "score": "Best score first", "random": "At random"}
@@ -59,6 +61,122 @@ def _busy_elsewhere(s: Session, campaign_id: int | None) -> set[int]:
     return set(s.scalars(q))
 
 
+def _started(s: Session) -> set[int]:
+    """Leads who already have a first email written or sent."""
+    return set(s.scalars(
+        select(Message.lead_id).where(Message.direction == "out", Message.step == 0,
+                                      Message.status.in_(ACTIVE))
+    ))  # fmt: skip
+
+
+def why_not(s: Session, lead: Lead, campaign_id: int | None = None) -> str | None:
+    """Why this lead can't be added to a campaign by hand, or None if it can."""
+    if lead.do_not_contact:
+        return "marked do-not-contact"
+    if lead.last_contacted_at or lead.id in _started(s):
+        return "already contacted"
+    if lead.status not in ("new", "shortlisted"):
+        return f"already {lead.status.replace('_', ' ')}"
+    if lead.id in _busy_elsewhere(s, campaign_id):
+        return "waiting in another campaign"
+    se, _ = shared_contacts()
+    if not usable_emails(lead, se):
+        return "no email address of their own"
+    return None
+
+
+def facets(s: Session, leads: list[Lead]) -> dict[str, Any]:
+    """How many of these leads have each trait: shown beside each filter, so you see what
+    a filter would leave before clicking it."""
+    se, sp = shared_contacts()
+    tags = Counter(t for l in leads for t in set(l.tags or []) if t in SPECIALTIES)
+    soc = Counter(k for l in leads for k in SOCIALS if (l.socials or {}).get(k))
+    nets = Counter(l.network for l in leads if l.network)
+    young = {y: sum(1 for l in leads if (a := _years_since(l.founded)) is not None and a <= y) for y in (1, 2, 5)}
+    return {
+        "total": len(leads),
+        "first_name": sum(1 for l in leads if mailer.first_name(l)),
+        "email_personal": sum(1 for l in leads if any(email_is_personal(e) for e in usable_emails(l, se))),
+        "phone": sum(1 for l in leads if usable_phones(l, sp)),
+        "website_yes": sum(1 for l in leads if l.website), "website_no": sum(1 for l in leads if not l.website),
+        "small": sum(1 for l in leads if SMALL_NEW & set(l.tags or [])),
+        "solo": sum(1 for l in leads if "sole_trader" in (l.tags or []) or (l.headcount or "") in SOLO_HEADCOUNT),
+        "measured": sum(1 for l in leads if (l.photos_measured or 0) > 0),
+        "lean": {v: sum(1 for l in leads if (l.lean_median or 0) >= v) for v in (0.5, 1, 2, 3)},
+        "score": {v: sum(1 for l in leads if (l.score or 0) >= v) for v in (40, 60, 80)},
+        "shortlisted": sum(1 for l in leads if l.status == "shortlisted"),
+        "independent": sum(1 for l in leads if not l.network), "network": sum(1 for l in leads if l.network),
+        "founded": young,
+        "tags": [{"tag": t, "label": SPECIALTIES[t], "n": n} for t, n in tags.most_common()],
+        "socials": {k: soc.get(k, 0) for k in SOCIALS},
+        "networks": [{"name": k, "n": n} for k, n in nets.most_common(20)],
+    }  # fmt: skip
+
+
+# What a lead does, from its tags, in the words people use. Filters and the facet counts.
+SPECIALTIES = {
+    "transaction": "Sales", "rental": "Rentals", "short_stay": "Holiday lets", "prestige": "Luxury",
+    "new_build": "New builds", "commercial": "Commercial", "home_staging": "Home staging",
+    "drone": "Drone", "virtual_tour": "Virtual tours", "pro_photos": "Pro photo service",
+    "management": "Property management", "syndic": "Building management",
+}  # fmt: skip
+SOCIALS = ("instagram", "facebook", "linkedin")
+SOLO_HEADCOUNT = {"NN", "00", "01"}  # INSEE: no employee, or 1-2
+
+
+def _fold(text: str | None) -> str:
+    """Lowercase without accents, for 'contains' searches."""
+    t = unicodedata.normalize("NFKD", text or "")
+    return "".join(ch for ch in t if not unicodedata.combining(ch)).lower()
+
+
+def _years_since(day: str | None) -> float | None:
+    try:
+        return (date.today() - date.fromisoformat((day or "")[:10])).days / 365.25
+    except ValueError:
+        return None
+
+
+def _matches(lead: Lead, f: dict[str, Any], se: set[str], sp: set[str]) -> bool:
+    """The filters that need Python (JSON fields, text, derived facts). SQL did the rest."""
+    tags = set(lead.tags or [])
+    if f.get("first_name") and not mailer.first_name(lead):
+        return False
+    if f.get("email_personal") and not any(email_is_personal(e) for e in usable_emails(lead, se)):
+        return False
+    if f.get("phone") and not usable_phones(lead, sp):
+        return False
+    if f.get("small") and not (SMALL_NEW & tags):
+        return False
+    if f.get("solo") and not ("sole_trader" in tags or (lead.headcount or "") in SOLO_HEADCOUNT):
+        return False
+    if f.get("founded_years"):
+        age = _years_since(lead.founded)
+        if age is None or age > float(f["founded_years"]):
+            return False
+    for net in f.get("socials") or []:
+        if not (lead.socials or {}).get(net):
+            return False
+    if f.get("tags_any") and not (set(f["tags_any"]) & tags):
+        return False
+    if f.get("tags_none") and set(f["tags_none"]) & tags:
+        return False
+    if f.get("network") == "independent" and lead.network:
+        return False
+    if f.get("network") == "network" and not lead.network:
+        return False
+    if f.get("networks") and lead.network not in f["networks"]:
+        return False
+    if f.get("town") and _fold(f["town"]) not in _fold(lead.city):
+        return False
+    if f.get("q"):
+        people = " ".join(p.get("name", "") for p in lead.people or [])
+        hay = _fold(" ".join(filter(None, [lead.name, lead.legal_name, lead.city, lead.website, lead.notes, people])))
+        if not all(w in hay for w in _fold(f["q"]).split()):
+            return False
+    return True
+
+
 def candidates(
     s: Session, kind: str, filters: dict[str, Any], order: str = "small", seed: int = 0,
     campaign_id: int | None = None, needs_lean: bool = False,
@@ -66,9 +184,10 @@ def candidates(
     """Every lead the filters let in, never contacted, with an address of their own, in
     sending order."""
     f = filters or {}
+    statuses = ("shortlisted",) if f.get("shortlisted") else ("new", "shortlisted")
     q = select(Lead).where(
         Lead.kind == kind, Lead.do_not_contact.is_(False),
-        Lead.status.in_(("new", "shortlisted")), Lead.last_contacted_at.is_(None),
+        Lead.status.in_(statuses), Lead.last_contacted_at.is_(None),
     )  # fmt: skip
     if f.get("deps"):
         q = q.where(or_(*[Lead.postcode.startswith(str(d)) for d in f["deps"]]))
@@ -77,23 +196,22 @@ def candidates(
     lean_min = max(float(f.get("lean_min") or 0), 1.0 if needs_lean else 0)
     if lean_min:
         q = q.where(Lead.lean_median >= lean_min)
-    if f.get("website"):
+    if f.get("measured"):
+        q = q.where(Lead.photos_measured > 0)
+    if f.get("website") in (True, "yes"):
         q = q.where(Lead.website.is_not(None))
+    elif f.get("website") == "no":
+        q = q.where(Lead.website.is_(None))
     if f.get("score_min"):
         q = q.where(Lead.score >= int(f["score_min"]))
-    started = set(s.scalars(
-        select(Message.lead_id).where(Message.direction == "out", Message.step == 0,
-                                      Message.status.in_(ACTIVE))
-    ))  # fmt: skip
+    started = _started(s)
     busy = _busy_elsewhere(s, campaign_id)
-    se, _ = shared_contacts()
+    se, sp = shared_contacts()
     out = []
     for lead in s.scalars(q):
         if lead.id in started or lead.id in busy or not usable_emails(lead, se):
             continue
-        if f.get("first_name") and not mailer.first_name(lead):
-            continue
-        if f.get("small") and not (SMALL_NEW & set(lead.tags or [])):
+        if not _matches(lead, f, se, sp):
             continue
         out.append(lead)
     if order == "random":
@@ -111,13 +229,62 @@ def needs_lean(tpls: list[Template]) -> bool:
     return any("{lean}" in (t.subject + t.body) for t in tpls)
 
 
+def hand_picked(s: Session, ids: list[int] | None, campaign_id: int | None = None) -> tuple[list[Lead], list[tuple[Lead, str]]]:
+    """Leads added by hand: those that can be contacted, and the others with the reason."""
+    ok, blocked = [], []
+    for i in ids or []:
+        lead = s.get(Lead, i)
+        if lead is None:
+            continue
+        why = why_not(s, lead, campaign_id)
+        (blocked.append((lead, why)) if why else ok.append(lead))
+    return ok, blocked
+
+
+def pick(every: list[Lead], hand: list[Lead], size: int, excluded: list[int] | None) -> list[Lead]:
+    """Who gets written to: the leads added by hand first, then the first `size` the
+    filters let in (minus those unticked)."""
+    gone = set(excluded or [])
+    have = {l.id for l in hand}
+    keep = [l for l in every if l.id not in gone and l.id not in have]
+    return hand + keep[: max(0, size)]
+
+
 def audience(s: Session, c: Campaign) -> tuple[list[Lead], int]:
     """The leads this campaign would contact now, and how many match in all."""
     every = candidates(s, c.kind, c.filters or {}, c.lead_order or "small", seed=c.id or 0,
                        campaign_id=c.id, needs_lean=needs_lean(versions(s, c)))  # fmt: skip
-    gone = set(c.excluded or [])
-    keep = [l for l in every if l.id not in gone]
-    return keep[: max(0, c.size or 0)], len(every)
+    hand, _ = hand_picked(s, c.included, c.id)
+    return pick(every, hand, c.size or 0, c.excluded), len(every)
+
+
+def add_specific(s: Session, c: Campaign, lead_ids: list[int]) -> tuple[int, list[str]]:
+    """Add chosen leads to a campaign. A draft keeps them in its hand-picked list; a
+    started campaign hands them a version at once. Returns how many were added and why
+    the others weren't."""
+    hand, blocked = hand_picked(s, lead_ids, c.id)
+    notes = [f"{l.name}: {why}" for l, why in blocked]
+    if c.status == "draft":
+        before = set(c.included or [])
+        c.included = list(c.included or []) + [l.id for l in hand if l.id not in before]
+        c.excluded = [x for x in c.excluded or [] if x not in {l.id for l in hand}]
+        return len(set(c.included) - before), notes
+    have = set(s.scalars(select(CampaignLead.lead_id).where(CampaignLead.campaign_id == c.id)))
+    new = [l for l in hand if l.id not in have]
+    notes += [f"{l.name}: already in this campaign" for l in hand if l.id in have]
+    tpls = versions(s, c)
+    exp = s.get(Experiment, c.experiment_id) if c.experiment_id else None
+    if exp and exp.status == "stopped" and exp.winner_id:
+        tpls = [t for t in tpls if t.id == exp.winner_id] or tpls
+    top = s.scalar(select(func.max(CampaignLead.rank)).where(CampaignLead.campaign_id == c.id)) or 0
+    picks = _deal(len(new), len(tpls), seed=c.id + top + 7)
+    for i, (lead, v) in enumerate(zip(new, picks), start=1):
+        s.add(CampaignLead(campaign_id=c.id, lead_id=lead.id, template_id=tpls[v].id, rank=top + i))
+        lead.campaign_id = c.id
+    c.size = (c.size or 0) + len(new)
+    if new and c.status == "done":
+        c.status = "running"
+    return len(new), notes
 
 
 # --- start, write, finish ----------------------------------------------------------

@@ -243,3 +243,64 @@ def test_a_finished_campaign_reopens_when_it_grows(db):
         s.commit()
     assert client.post(f"/api/campaigns/{c['id']}/more", json={"n": 2}).json()["added"] == 2
     assert client.get(f"/api/campaigns/{c['id']}").json()["status"] == "running"
+
+
+def test_smart_filters_and_their_counts(db):
+    a, b, c, d = leads(db, 4)
+    with db() as s:
+        s.get(Lead, a).tags = ["short_stay", "drone"]
+        s.get(Lead, a).socials = {"instagram": "https://instagram.com/a"}
+        s.get(Lead, a).phones = [{"value": "0612345678", "source": "x"}]
+        s.get(Lead, b).tags = ["short_stay"]
+        s.get(Lead, b).founded = (date.today() - timedelta(days=200)).isoformat()
+        s.get(Lead, c).website = None
+        s.get(Lead, d).emails = [{"value": "marie.dupont@gmail.com", "source": "x"}]
+        s.commit()
+
+    def n(**f):
+        return client.post("/api/campaigns/audience", json={"kind": "photographer", "filters": f}).json()["matching"]
+
+    assert n(tags_any=["short_stay"]) == 2 and n(tags_none=["short_stay"]) == 2
+    assert n(tags_any=["short_stay"], tags_none=["drone"]) == 1
+    assert n(socials=["instagram"]) == 1 and n(phone=True) == 1
+    assert n(founded_years=1) == 1 and n(website="no") == 1 and n(website="yes") == 3
+    assert n(email_personal=True) == 1 and n(town="colmar") == 4 and n(town="Mulhouse") == 0
+    assert n(q="studio 2") == 1  # every word must be found
+    r = client.post("/api/campaigns/audience", json={"kind": "photographer"}).json()
+    fa = r["facets"]
+    assert fa["phone"] == 1 and fa["website_no"] == 1 and fa["socials"]["instagram"] == 1
+    assert {"tag": "short_stay", "label": "Holiday lets", "n": 2} in fa["tags"]
+
+
+def test_leads_added_by_hand_come_first_and_count_on_top(db):
+    ids = leads(db, 4)
+    other = leads(db, 1, kind="agency", name="Agence du Rhin")[0]
+    gone = leads(db, 1, name="Déjà vu", last_contacted_at="2026-11-01T10:00:00+00:00")[0]
+    c = draft(size=2, filters={"deps": ["67"]})  # 67: ids[0], ids[2]
+    r = client.post(f"/api/campaigns/{c['id']}/leads", json={"lead_ids": [ids[1], other, gone]}).json()
+    assert r["added"] == 2 and r["notes"] == ["Déjà vu: already contacted"]
+    aud = client.post("/api/campaigns/audience", json={"kind": "photographer", "filters": {"deps": ["67"]}, "size": 2,
+                                                       "included": r["included"], "campaign_id": c["id"]}).json()  # fmt: skip
+    assert aud["chosen"] == 4 and aud["from_filters"] == 2
+    assert [x["id"] for x in aud["preview"][:2]] == [ids[1], other] and aud["preview"][0]["by_hand"]
+    found = client.get("/api/campaigns/lookup", params={"q": "Déjà", "campaign_id": c["id"]}).json()["items"]
+    assert found[0]["why"] == "already contacted"
+    two_versions(c["id"])
+    assert client.post(f"/api/campaigns/{c['id']}/start").json()["leads"] == 4
+
+
+def test_add_a_lead_by_hand_to_a_started_campaign(db):
+    ids = leads(db, 3)
+    c = draft(size=2, order="score")
+    two_versions(c["id"])
+    client.post(f"/api/campaigns/{c['id']}/start")
+    spare = [i for i in ids if i not in {ids[1], ids[2]}][0]
+    camps = client.get(f"/api/leads/{spare}/campaigns").json()
+    assert camps["why"] is None and camps["items"][0]["inside"] is False
+    r = client.post(f"/api/campaigns/{c['id']}/leads", json={"lead_ids": [spare]}).json()
+    assert r["added"] == 1
+    with db() as s:
+        assert s.scalar(select(CampaignLead).where(CampaignLead.lead_id == spare)).campaign_id == c["id"]
+    assert client.get(f"/api/leads/{spare}/campaigns").json()["items"][0]["inside"] is True
+    again = client.post(f"/api/campaigns/{c['id']}/leads", json={"lead_ids": [spare]}).json()
+    assert again["added"] == 0
