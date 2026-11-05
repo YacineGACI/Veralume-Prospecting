@@ -1,19 +1,24 @@
 // Veralume Prospects: router, search palette, keyboard, refresh. No build step.
 import { $, $$, api, av, bus, closeModal, esc, fail, KIND, modalOpen, pill } from "./core.js";
 import { closeLead, drawer, leadKey, openLead } from "./lead.js";
-import { applyTheme, calls, campaigns, insights, leads, pilots, pipeline, settingsView, tests, today, ui } from "./views.js";
+import { campaignsView, campaignView, dossiersView } from "./campaigns.js";
+import { applyTheme, calls, insights, leads, pilots, pipeline, settingsView, today, ui } from "./views.js";
 
-const VIEWS = { today, leads, call: calls, pipeline, pilots, campaigns, tests, insights, settings: settingsView };
+const VIEWS = { today, leads, call: calls, pipeline, pilots, campaigns: campaignsView, campaign: campaignView, dossiers: dossiersView, insights, settings: settingsView };
+// The rail item each view belongs to.
+const RAIL = { campaign: "campaigns", dossiers: "campaigns" };
 let current = null;
-const viewName = () => (VIEWS[location.hash.slice(1)] ? location.hash.slice(1) : "today");
+// #campaign/12 → view "campaign", argument "12". The old #tests page now lives in campaigns.
+const hashParts = () => location.hash.slice(1).split("/");
+const viewName = () => { const n = hashParts()[0]; return VIEWS[n] ? n : n === "tests" ? "campaigns" : "today"; };
 
 async function route() {
   const name = viewName();
   if (current && current !== VIEWS[name]) current.leave?.();
   current = VIEWS[name];
-  $$(".rail a[data-v]").forEach((a) => a.setAttribute("aria-current", a.dataset.v === name ? "page" : "false"));
+  $$(".rail a[data-v]").forEach((a) => a.setAttribute("aria-current", a.dataset.v === (RAIL[name] || name) ? "page" : "false"));
   try {
-    await current.render();
+    await current.render(hashParts()[1]);
   } catch (e) {
     $("#canvas").innerHTML = `<div class="view"><div class="note bad">Couldn't load this view: ${esc(e.message)}. Is <span class="mono">prospect serve</span> still running?</div></div>`;
   }
@@ -43,7 +48,7 @@ bus.addEventListener("changed", () => {
 // --- search palette ------------------------------------------------------------------
 const CMDS = [
   ["Today", "#today", "g t"], ["Leads", "#leads", "g l"], ["Call mode", "#call", "g c"], ["Pipeline", "#pipeline", "g p"], ["Pilots and their photos", "#pilots", "g o"],
-  ["Campaigns and templates", "#campaigns", "g m"], ["A/B tests", "#tests", "g a"], ["Insights", "#insights", "g i"], ["Settings and mailbox", "#settings", "g s"],
+  ["Campaigns and A/B tests", "#campaigns", "g m"], ["Dossiers of photos", "#dossiers", ""], ["Insights", "#insights", "g i"], ["Settings and mailbox", "#settings", "g s"],
 ];
 let palIdx = 0, palItems = [], palTimer;
 async function renderPal() {
@@ -107,7 +112,7 @@ document.addEventListener("keydown", (e) => {
   if (drawer.lead) { if (leadKey(e)) e.preventDefault(); return; }
   if (gPending) {
     gPending = false;
-    const to = { t: "today", l: "leads", c: "call", p: "pipeline", o: "pilots", m: "campaigns", a: "tests", i: "insights", s: "settings" }[e.key];
+    const to = { t: "today", l: "leads", c: "call", p: "pipeline", o: "pilots", m: "campaigns", a: "campaigns", i: "insights", s: "settings" }[e.key];
     if (to) { location.hash = to; e.preventDefault(); }
     return;
   }

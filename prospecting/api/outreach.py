@@ -18,7 +18,6 @@ from prospecting.db import (
     KINDS,
     STATUSES,
     Asset,
-    Campaign,
     Experiment,
     Lead,
     LeadFile,
@@ -150,7 +149,8 @@ def compose(lead_id: int, template_id: int | None = None) -> dict[str, Any]:
             step = 1
         seg = "agency" if lead.kind == "independent_agent" else lead.kind
         tpls = s.scalars(
-            select(Template).where(Template.archived.is_(False)).order_by(Template.step, Template.id)
+            select(Template).where(Template.archived.is_(False), Template.campaign_id.is_(None))
+            .order_by(Template.step, Template.id)
         )
         photo = s.get(Photo, d["attach_photo_id"]) if d["attach_photo_id"] else None
         photo = photo or mailer.best_photo(s, lead.id)
@@ -386,7 +386,8 @@ def templates() -> dict[str, Any]:
     with session() as s:
         mailer.ensure_templates(s)
         rows = list(
-            s.scalars(select(Template).order_by(Template.archived, Template.step, Template.id))
+            s.scalars(select(Template).where(Template.campaign_id.is_(None))
+                      .order_by(Template.archived, Template.step, Template.id))
         )
         sent: dict[int | None, set[int]] = {}
         for tid, lead_id in s.execute(
@@ -473,85 +474,6 @@ def preview_template(p: PreviewIn) -> dict[str, Any]:
             "choices": [{"id": l.id, "label": f"{l.name} · {mailer.first_name(l)} · {l.city or ''}"}
                         for l in choices],
         }  # fmt: skip
-
-
-# --- campaigns -----------------------------------------------------------------------
-
-
-def _camp(s, c: Campaign) -> dict[str, Any]:
-    return {"id": c.id, "name": c.name, "kind": c.kind, "filters": c.filters or {},
-            "template_id": c.template_id, "daily_cap": c.daily_cap, "status": c.status,
-            "stats": outreach.campaign_stats(s, c),
-            "test": (e.name if not c.template_id and (e := experiments.running_for(s, c.kind))
-                     else None)}  # fmt: skip
-
-
-@router.get("/campaigns")
-def campaigns() -> dict[str, Any]:
-    with session() as s:
-        rows = s.scalars(select(Campaign).order_by(Campaign.id.desc()))
-        return {"items": [_camp(s, c) for c in rows], "mailbox": mailbox_status(s)}
-
-
-class CampaignIn(BaseModel):
-    name: str
-    kind: str
-    filters: dict[str, Any] = {}
-    template_id: int | None = None
-    daily_cap: int = 20
-    status: str = "draft"
-
-
-@router.post("/campaigns")
-def new_campaign(c: CampaignIn) -> dict[str, Any]:
-    if c.kind not in KINDS:
-        raise HTTPException(422, "Unknown segment")
-    with session() as s:
-        row = Campaign(**c.model_dump())
-        s.add(row)
-        s.commit()
-        return _camp(s, row)
-
-
-class CampaignPatch(BaseModel):
-    name: str | None = None
-    filters: dict[str, Any] | None = None
-    template_id: int | None = None
-    daily_cap: int | None = None
-    status: str | None = None
-
-
-@router.patch("/campaigns/{campaign_id}")
-def edit_campaign(campaign_id: int, c: CampaignPatch) -> dict[str, Any]:
-    with session() as s:
-        row = s.get(Campaign, campaign_id)
-        if row is None:
-            raise HTTPException(404, "No such campaign")
-        for k, v in c.model_dump(exclude_unset=True).items():
-            setattr(row, k, v)
-        if c.status == "paused":  # approved first emails go back to review
-            q = select(Message).where(Message.campaign_id == row.id, Message.step == 0,
-                                      Message.status == "approved")  # fmt: skip
-            for m in s.scalars(q):
-                m.status = "queued"
-        s.commit()
-        return _camp(s, row)
-
-
-class PrepareIn(BaseModel):
-    n: int | None = None
-
-
-@router.post("/campaigns/{campaign_id}/prepare")
-def prepare(campaign_id: int, p: PrepareIn) -> dict[str, Any]:
-    """Write the next batch of first emails now; they wait for review in Today."""
-    with session() as s:
-        row = s.get(Campaign, campaign_id)
-        if row is None:
-            raise HTTPException(404, "No such campaign")
-        n = outreach.prepare(s, row, p.n)
-        s.commit()
-        return {"written": n, "campaign": _camp(s, row)}
 
 
 # --- insights and settings -----------------------------------------------------------

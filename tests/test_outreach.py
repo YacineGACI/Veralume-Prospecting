@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from prospecting import contacts, inbox, mailer, outreach
 from prospecting.config import settings
-from prospecting.db import Activity, Campaign, Lead, Message, Photo, Template
+from prospecting.db import Activity, Lead, Message, Photo, Template
 from prospecting.mailer import MailError
 
 
@@ -214,22 +214,6 @@ def test_call_outcomes(db):
         assert len(list(s.scalars(select(Activity).where(Activity.kind == "call")))) == 3
 
 
-def test_campaign_writes_first_emails_for_review(db):
-    with db() as s:
-        for i in range(5):
-            add_lead(s, name=f"Studio {i}", emails=[{"value": f"p{i}@studio{i}.fr", "source": "x"}],
-                     tags=["real_estate", "new_business"] if i == 4 else ["real_estate"])  # fmt: skip
-        add_lead(s, name="Sans email", emails=[])
-        c = Campaign(name="Photographes", kind="photographer", daily_cap=3, status="running")
-        s.add(c)
-        s.flush()
-        assert outreach.prepare(s, c) == 3
-        assert outreach.prepare(s, c) == 0  # today's batch is written
-        queued = list(s.scalars(select(Message).where(Message.status == "queued")))
-        assert len(queued) == 3
-        # Small and new businesses come first.
-        assert s.get(Lead, queued[0].lead_id).name == "Studio 4"
-        assert len(outreach.ready_to_send(s)) == 3
 
 
 def test_fresh_leads_skip_contacted_and_unusable(db):

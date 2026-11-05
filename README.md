@@ -43,9 +43,33 @@ Every step is resumable: it only processes leads not done yet (`--retry` redoes 
 - **Call mode** (`g c`): a queue (call-backs, emailed without reply for 5 days, best new leads
   with a direct phone), a dial link that rings through your phone, the script with their
   numbers, and keys `1`–`6` for the outcome; the next lead comes up.
-- **Pipeline**: drag cards between stages. **Campaigns**: a segment, a first email and a
-  daily cap; each working morning the next batch is written for your review. Templates are
-  edited there. **Insights**: emails and calls per day, reply rate by segment, lean and template.
+- **Pipeline**: drag cards between stages. **Campaigns** (`g m`): see below.
+  **Insights**: emails and calls per day, reply rate by segment, lean and template.
+
+### Campaigns and A/B tests
+
+A campaign is built in three steps, saved as a draft as you go:
+
+1. **Who**: a segment, filters you click on and off (first name known, new or one-person
+   business, website, leaning photos, score, distance, départements), how many to contact
+   and who goes first (small and new first, best score, or at random). The count updates
+   live; untick anyone in the list of the first leads to leave them out.
+2. **Email**: one version, or up to four to compare (an A/B test). Each version has its own
+   subject, text and images ticked from your **dossiers**, a live preview on a real lead,
+   and *Send to me* for a test. Each lead gets one version at random, in equal shares.
+3. **Sending**: emails a day, a start day, and whether you approve each morning's batch in
+   Today or approve the whole campaign once. Follow-ups (day 4 and 10) always wait for you.
+
+Starting it fixes the list of leads (a lead is in one running campaign at a time). The
+campaign page then shows emailed / replied / interested / free tests, day by day, every
+lead and what happened, and for a test each version's reply rate, its likely range and its
+chance of being the best. When one version is clearly better (95 %), it offers to send that
+one to everyone not emailed yet. Campaigns can be paused, grown, or duplicated to try
+something else.
+
+**Dossiers** (Campaigns › Dossiers) are named sets of images reused across campaigns. Each
+image shows how often it was sent and how often that got a reply. *Make a before/after*
+puts two photos side by side with “Avant” and “Après” labels.
 
 ### Email
 
@@ -73,10 +97,9 @@ Claude (paid, `claude-opus-5-5` by default; set `PROSPECT_AI_MODEL_CLAUDE` to ch
 
 ### Before/after images and pilots
 
-- **Images in templates**: in Campaigns, open a template and upload before/after examples
-  (or pick them from the library). Every email of that template carries them, as
-  `avant-apres-1.jpg`, `avant-apres-2.jpg`… `{nb_images}` says how many. The editor shows
-  the email exactly as a real lead of the segment gets it, with their name filled in.
+- **Images in emails**: a campaign version or a template carries images from your
+  dossiers, attached as `avant-apres-1.jpg`, `avant-apres-2.jpg`… `{nb_images}` says how
+  many.
 - **Their photos**: photos attached to a lead's reply are saved in their file
   (`data/leadfiles/<lead>/`), and a WeTransfer/Drive link in it is shown so you can fetch
   them. The lead's file has a *Their photos* tab: download one or all (.zip), drop your
@@ -88,10 +111,6 @@ Claude (paid, `claude-opus-5-5` by default; set `PROSPECT_AI_MODEL_CLAUDE` to ch
 
 Gmail refuses emails over 25 MB: the composer shows the size and stops above 20 MB.
 
-### A/B tests
-
-Compare two to four first emails on one segment: each new lead gets one version, and the
-A/B tests view shows each version's reply rate and its chance of being the best.
 
 ## Free sources and their limits
 

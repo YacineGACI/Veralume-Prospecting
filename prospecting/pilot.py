@@ -279,7 +279,7 @@ def file_dict(f: LeadFile) -> dict[str, Any]:
 
 
 def asset_dict(a: Asset) -> dict[str, Any]:
-    return {"id": a.id, "name": a.name, "size": a.size, "archived": a.archived,
+    return {"id": a.id, "name": a.name, "size": a.size, "archived": a.archived, "dossier_id": a.dossier_id,
             "src": f"/api/assets/{a.id}/file", "thumb": f"/api/assets/{a.id}/thumb"}  # fmt: skip
 
 
@@ -294,3 +294,76 @@ def next_step(lead: Lead, c: dict[str, int]) -> str | None:
         "sent_back": "Ask what they think",
         "feedback": "Decide: customer or not",
     }.get(lead.pilot_stage or "")  # fmt: skip
+
+
+# --- dossiers: reusable sets of images ---------------------------------------------
+
+
+def ensure_dossiers(s: Session) -> None:
+    """Images from before dossiers existed go into a first one."""
+    from prospecting.db import Dossier
+
+    loose = list(s.scalars(select(Asset).where(Asset.dossier_id.is_(None), Asset.archived.is_(False))))
+    if not loose:
+        return
+    first = s.scalars(select(Dossier).where(Dossier.archived.is_(False)).order_by(Dossier.id)).first()
+    if first is None:
+        first = Dossier(name="Avant / après", note="Before/after examples")
+        s.add(first)
+        s.flush()
+    for a in loose:
+        a.dossier_id = first.id
+
+
+def _label_font(size: int):
+    from PIL import ImageFont
+
+    for f in ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf", "DejaVuSans-Bold.ttf"):  # fmt: skip
+        try:
+            return ImageFont.truetype(f, size)
+        except OSError:
+            continue
+    return ImageFont.load_default()
+
+
+def make_pair(before: Path, after: Path, height: int = 1000) -> bytes:
+    """The two photos side by side at the same height, labelled Avant and Après."""
+    from PIL import ImageDraw
+
+    ims = []
+    for p in (before, after):
+        with Image.open(p) as im:
+            im = ImageOps.exif_transpose(im).convert("RGB")
+            ims.append(im.resize((round(im.width * height / im.height), height)))
+    gap = 12
+    out = Image.new("RGB", (ims[0].width + ims[1].width + gap, height), "white")
+    out.paste(ims[0], (0, 0))
+    out.paste(ims[1], (ims[0].width + gap, 0))
+    d = ImageDraw.Draw(out)
+    font = _label_font(max(24, height // 26))
+    pad = max(14, height // 45)
+    for x, label in ((0, "Avant"), (ims[0].width + gap, "Après")):
+        w = d.textlength(label, font=font)
+        h = font.size if hasattr(font, "size") else 20
+        d.rounded_rectangle((x + pad, pad, x + pad + w + 2 * pad, pad + h + pad), pad // 2, fill=(0, 0, 0))
+        d.text((x + 2 * pad, pad + pad // 2 - 2), label, font=font, fill="white")
+    buf = io.BytesIO()
+    out.save(buf, "JPEG", quality=86, optimize=True)
+    return buf.getvalue()
+
+
+def image_stats(s: Session) -> dict[int, dict[str, int]]:
+    """For each library image: first emails it went out with, and how many got a reply."""
+    sent = list(s.execute(
+        select(Message.lead_id, Message.asset_ids).where(
+            Message.direction == "out", Message.status == "sent", Message.step == 0)
+    ))  # fmt: skip
+    replied = set(s.scalars(select(Message.lead_id).where(Message.direction == "in")))
+    out: dict[int, dict[str, int]] = {}
+    for lead_id, ids in sent:
+        for a in ids or []:
+            st = out.setdefault(a, {"sent": 0, "replied": 0})
+            st["sent"] += 1
+            st["replied"] += lead_id in replied
+    return out

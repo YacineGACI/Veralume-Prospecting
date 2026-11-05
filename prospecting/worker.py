@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 
-from prospecting import inbox, mailer, outreach
+from prospecting import campaigns, inbox, mailer
 from prospecting.config import settings
 from prospecting.db import now, session
 
@@ -18,7 +18,7 @@ _stop = threading.Event()
 
 def tick(poll_inbox: bool) -> None:
     with session() as s:
-        outreach.prepare_running(s)
+        campaigns.prepare_running(s)
         s.commit()
         msg = mailer.send_due(s)
         s.commit()

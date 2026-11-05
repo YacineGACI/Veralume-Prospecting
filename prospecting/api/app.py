@@ -15,6 +15,7 @@ from sqlalchemy import func, or_, select
 
 from prospecting import enrich, mailer, pilot, scoring, screen, worker
 from prospecting.api.experiments import router as experiments_router
+from prospecting.api.campaigns import router as campaigns_router
 from prospecting.api.pilot import router as pilot_router
 from prospecting.api.outreach import router as outreach_router
 from prospecting.api.writer import router as writer_router
@@ -53,6 +54,7 @@ app.include_router(outreach_router)
 app.include_router(experiments_router)
 app.include_router(writer_router)
 app.include_router(pilot_router)
+app.include_router(campaigns_router)
 
 
 def _get(s, lead_id: int) -> Lead:

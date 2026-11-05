@@ -135,16 +135,6 @@ def test_one_running_test_per_segment_and_validation(db):
     assert r.status_code == 422
 
 
-def test_campaigns_feed_the_test(db):
-    _leads(db, 6)
-    _start(db)
-    camp = client.post("/api/campaigns", json={"name": "c", "kind": "photographer"}).json()
-    assert camp["test"] == "Lean vs plain"
-    client.post(f"/api/campaigns/{camp['id']}/prepare", json={"n": 6})
-    with db() as s:
-        tags = Counter(m.template_id for m in s.scalars(
-            select(Message).where(Message.experiment_id.is_not(None))))  # fmt: skip
-        assert sorted(tags.values()) == [3, 3]
 
 
 def test_sent_from_your_mail_app_counts(db):

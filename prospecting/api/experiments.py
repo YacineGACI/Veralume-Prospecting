@@ -35,7 +35,7 @@ def list_experiments() -> dict[str, Any]:
         rows = list(s.scalars(select(Experiment).order_by(Experiment.id.desc())))
         tpls = s.scalars(
             select(Template)
-            .where(Template.step == 0, Template.key != "after_voicemail")
+            .where(Template.step == 0, Template.key != "after_voicemail", Template.campaign_id.is_(None))
             .order_by(Template.archived, Template.id)
         )
         return {

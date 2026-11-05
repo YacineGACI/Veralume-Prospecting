@@ -1,0 +1,644 @@
+// Campaigns: the list, one campaign (a three-step builder while it's a draft, its results
+// once started) and dossiers (reusable sets of images).
+import {
+  $, aiBar, api, busy, changed, closeModal, confetti, esc, fail, I, KINDS_PL, openModal,
+  small, toast, when, wireAiBar,
+} from "./core.js";
+import { openLead } from "./lead.js";
+import { campaigns as templatesUI } from "./views.js";
+
+const C = () => $("#canvas");
+const SEGS = ["photographer", "agency", "independent_agent"];
+const LET = ["A", "B", "C", "D"];
+const VCOL = ["var(--emerald)", "var(--blue)", "var(--violet)", "var(--warn)"];
+const pct = (v) => (v == null ? "–" : `${Math.round(v * 100)} %`);
+const plural = (n, one, many = one + "s") => `${n.toLocaleString("en")} ${n === 1 ? one : many}`;
+const STATUS = { draft: ["Draft", "st-new"], running: ["Running", "st-pilot"], paused: ["Paused", "st-contacted"], done: ["Finished", "st-customer"] };
+const statusPill = (s) => `<span class="pill ${STATUS[s]?.[1] || ""}">${STATUS[s]?.[0] || esc(s)}</span>`;
+const workdays = (n, cap) => Math.max(1, Math.ceil(n / Math.max(cap, 1)));
+const usesLean = (vs) => vs.some((v) => `${v.subject} ${v.body}`.includes("{lean}"));
+
+// --- the list --------------------------------------------------------------------------
+
+export const campaignsView = {
+  async render() {
+    const [c, t] = await Promise.all([api("/api/campaigns"), api("/api/templates")]);
+    const mb = c.mailbox;
+    const card = (x) => {
+      const r = x.results, tot = r?.totals;
+      const test = r?.test;
+      const body = x.status === "draft"
+        ? `<p class="small muted" style="margin:0">${plural(x.preview.chosen, "lead")} chosen of ${x.preview.matching.toLocaleString("en")} matching · ${x.versions.length > 1 ? `A/B test of ${x.versions.length} versions` : "one email"} · not started</p>`
+        : `<div class="cp-bar" title="${tot.replied} replied · ${tot.sent - tot.replied} waiting · ${tot.to_review + tot.approved} written · ${tot.not_sent} not written yet">
+             <span style="flex:${tot.replied};background:var(--warn)"></span><span style="flex:${tot.sent - tot.replied};background:var(--emerald)"></span><span style="flex:${tot.to_review + tot.approved};background:var(--mint)"></span><span style="flex:${tot.not_sent}"></span></div>
+           <div class="cp-stats"><div><b>${tot.sent}</b><span>of ${tot.leads} emailed</span></div><div><b>${tot.replied}</b><span>replied${tot.sent ? ` · ${pct(tot.replied / tot.sent)}` : ""}</span></div><div><b>${tot.interested}</b><span>interested</span></div><div><b>${tot.pilots}</b><span>free tests</span></div></div>
+           ${test?.suggest ? `<div class="note ok">${small(I.check)} <span>Version ${esc(test.suggest.letter)} is clearly better. Open it to send ${esc(test.suggest.letter)} to the ${test.suggest.unsent} left.</span></div>`
+             : test && tot.sent ? `<p class="small muted" style="margin:0">A/B test: ${esc(test.verdict.text)}</p>` : ""}
+           ${tot.to_review ? `<p class="small" style="margin:0"><a href="#today">${plural(tot.to_review, "email")} waiting for your review in Today</a></p>` : ""}`;
+      return `<a class="card cp-card" href="#campaign/${x.id}"><div class="row"><h3>${esc(x.name)}</h3>${statusPill(x.status)}<span class="grow"></span><span class="small muted">${esc(KINDS_PL[x.kind] || x.kind)}</span></div>${body}</a>`;
+    };
+    const tpls = t.items;
+    C().innerHTML = `<div class="view">
+      <div class="topline"><div><h1>Campaigns</h1><div class="sub">Choose who to write to, write one email or several versions to compare, and watch what works.</div></div><span class="grow"></span>
+        <a class="btn" href="#dossiers">${small(I.copy)} Dossiers</a><button class="btn primary" data-new>${small(I.plus)} New campaign</button></div>
+      ${!mb.configured ? `<div class="note warn" style="margin-bottom:14px">Your mailbox isn't connected, so campaigns can't send yet. <a href="#settings">Connect it</a></div>` : ""}
+      ${c.items.length ? `<div class="grid2">${c.items.map(card).join("")}</div>`
+        : `<section class="card cp-empty"><h3>Your first campaign</h3><p class="muted">Three short steps: who you write to and how many, the email (or two versions to compare), and how many go out each day. The app writes each morning's emails; you approve them in Today.</p>
+            <div class="row"><button class="btn primary" data-new data-kind="photographer">Start with real-estate photographers</button><button class="btn" data-new data-kind="agency">Agencies</button></div></section>`}
+      <details class="card" style="margin-top:18px"><summary class="row" style="cursor:pointer"><h2 style="margin:0;font-size:16px">Reply, follow-up and other templates</h2><span class="small muted">used outside campaigns, and by every campaign's follow-ups</span></summary>
+        <div style="margin-top:10px">${tpls.map((x) => `<div class="tpl-row" data-tpl="${x.id}" ${x.archived ? 'style="opacity:.5"' : ""}><div style="min-width:0"><b>${esc(x.name)}</b><div class="small muted" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(x.subject)} · ${esc(x.body.replace(/\s+/g, " ").slice(0, 100))}…</div></div><span class="tag">${esc({ 0: "First email", 1: "Follow-up 1", 2: "Follow-up 2", "-1": "Reply" }[x.step] ?? x.step)}</span><span class="small mono">${x.sent ? `${x.sent} sent` : ""}</span></div>`).join("")}
+        <button class="btn sm" data-new-tpl style="margin-top:10px">${small(I.plus)} Template</button></div></details>
+    </div>`;
+    templatesUI.t = t;
+    C().onclick = async (e) => {
+      const b = e.target.closest("button, [data-tpl]");
+      if (!b) return;
+      if (b.dataset.new !== undefined) {
+        await busy(b, async () => {
+          const x = await api("/api/campaigns", { method: "POST", body: { kind: b.dataset.kind || "photographer", name: b.dataset.kind ? `${KINDS_PL[b.dataset.kind]} · ${new Date().toLocaleDateString("en-GB", { month: "long" })}` : "New campaign" } });
+          location.hash = `campaign/${x.id}`;
+        });
+      } else if (b.dataset.newTpl !== undefined) templatesUI.editTpl(null, { onSaved: () => this.render() });
+      else if (b.dataset.tpl) templatesUI.editTpl(t.items.find((x) => x.id === +b.dataset.tpl), { onSaved: () => this.render() });
+    };
+  },
+};
+
+// --- one campaign ------------------------------------------------------------------------
+
+const B = { c: null, aud: null, step: "who", ver: 0, depOptions: [], dossiers: null, timer: null, audTimer: null };
+
+export const campaignView = {
+  async render(arg) {
+    const id = +arg;
+    if (!id) { location.hash = "campaigns"; return; }
+    const c = await api(`/api/campaigns/${id}`);
+    if (B.c?.id !== id) Object.assign(B, { step: "who", ver: 0, depOptions: [], aud: null });
+    B.c = c;
+    if (c.status === "draft") {
+      B.dossiers = (await api("/api/dossiers")).items;
+      renderBuilder();
+      refreshAudience(true);
+    } else renderResults(c);
+  },
+  leave() { flushSave(); },
+};
+
+// --- the builder (a draft) ----------------------------------------------------------------
+
+function payload() {
+  const c = B.c;
+  return {
+    name: c.name, kind: c.kind, filters: c.filters, size: c.size, order: c.order, excluded: c.excluded,
+    daily_cap: c.daily_cap, review: c.review, metric: c.metric, start_on: c.start_on || "", followups_on: c.followups_on,
+    versions: c.versions.map((v) => ({ id: v.id || null, name: v.name, subject: v.subject, body: v.body, asset_ids: v.asset_ids, attach_photo: v.attach_photo })),
+  };
+}
+function save() {
+  clearTimeout(B.timer);
+  B.timer = setTimeout(flushSave, 500);
+  const s = $("[data-saved]");
+  if (s) s.textContent = "Saving…";
+}
+async function flushSave() {
+  if (!B.timer || !B.c || B.c.status !== "draft") return;
+  clearTimeout(B.timer);
+  B.timer = null;
+  try {
+    const r = await api(`/api/campaigns/${B.c.id}`, { method: "PUT", body: payload() });
+    r.versions.forEach((v, i) => { if (B.c.versions[i]) B.c.versions[i].id = v.id; });
+    const s = $("[data-saved]");
+    if (s) s.textContent = "Saved";
+  } catch (e) { fail(e); }
+}
+function refreshAudience(first = false) {
+  clearTimeout(B.audTimer);
+  B.audTimer = setTimeout(async () => {
+    const c = B.c;
+    try {
+      B.aud = await api("/api/campaigns/audience", { method: "POST", body: { kind: c.kind, filters: c.filters, order: c.order, size: c.size, excluded: c.excluded, campaign_id: c.id, needs_lean: usesLean(c.versions) } });
+      if (!(c.filters.deps || []).length) B.depOptions = B.aud.deps;
+      if (B.step === "who") drawStep(); else drawSummary();
+      drawSteps();
+    } catch (e) { fail(e); }
+  }, first ? 0 : 250);
+}
+
+function renderBuilder() {
+  const c = B.c;
+  C().onclick = C().onchange = C().ondragover = C().ondrop = null; // the builder listens on its own
+  B.lean = usesLean(c.versions);
+  C().innerHTML = `<div class="view wide cb">
+    <div class="cb-top"><div style="flex:1;min-width:260px"><p class="small muted" style="margin:0"><a href="#campaigns">Campaigns</a> / new · <span data-saved>Saved</span></p>
+      <input class="cb-name" data-f="name" value="${esc(c.name)}" aria-label="Campaign name" placeholder="Name this campaign"></div>
+      <button class="btn ghost danger sm" data-delete>Delete draft</button></div>
+    <div class="cb-grid">
+      <ol class="cb-steps" aria-label="Steps" data-steps></ol>
+      <main class="card cb-main" data-step></main>
+      <aside class="cb-side" data-summary></aside>
+    </div></div>`;
+  drawSteps();
+  drawStep();
+}
+
+function drawSteps() {
+  const c = B.c, a = B.aud;
+  const n = c.versions.length;
+  const steps = [
+    ["who", "Who", a ? `${a.chosen} of ${a.matching.toLocaleString("en")} leads` : "…"],
+    ["emails", n > 1 ? "Emails · A/B test" : "Email", n > 1 ? `${n} versions to compare` : "one version"],
+    ["sending", "Sending", `${c.daily_cap} a day · ${c.review === "auto" ? "approved once" : "you review daily"}`],
+  ];
+  const el = $("[data-steps]");
+  if (el) el.innerHTML = steps.map(([k, t, sub], i) => `<li><button data-go="${k}" aria-current="${B.step === k ? "step" : "false"}"><span class="cb-n">${i + 1}</span><span><b>${t}</b><span class="small muted">${esc(sub)}</span></span></button></li>`).join("");
+  drawSummary();
+}
+
+function drawStep() {
+  const el = $("[data-step]");
+  if (!el) return;
+  const i = ["who", "emails", "sending"].indexOf(B.step);
+  el.innerHTML = (B.step === "who" ? stepWho() : B.step === "emails" ? stepEmails() : stepSending())
+    + `<div class="cb-nav">${i ? `<button class="btn" data-go="${["who", "emails", "sending"][i - 1]}">Back</button>` : ""}<span class="grow"></span>
+       ${i < 2 ? `<button class="btn primary" data-go="${["who", "emails", "sending"][i + 1]}">Next: ${["", "the email", "sending"][i + 1]} →</button>` : `<button class="btn primary" data-start>Review and start</button>`}</div>`;
+  if (B.step === "emails") wireEmails();
+}
+
+const FILTERS = [
+  ["first_name", "have a first name", (f) => !!f.first_name, (f, on) => (f.first_name = on || undefined)],
+  ["small", "are new or one-person businesses", (f) => !!f.small, (f, on) => (f.small = on || undefined)],
+  ["website", "have a website", (f) => !!f.website, (f, on) => (f.website = on || undefined)],
+  ["lean", "have leaning photos (1° or more)", (f) => (f.lean_min || 0) >= 1, (f, on) => (f.lean_min = on ? 1 : undefined)],
+  ["score", "score 60 or more", (f) => (f.score_min || 0) >= 60, (f, on) => (f.score_min = on ? 60 : undefined)],
+];
+
+function stepWho() {
+  const c = B.c, f = c.filters, a = B.aud;
+  // The most common départements as buttons, the others in a list.
+  const opts = B.depOptions;
+  const top = opts.slice(0, 6).map((x) => x.dep);
+  const shown = [...new Set([...top, ...(f.deps || [])])];
+  const rest = opts.filter((x) => !shown.includes(x.dep));
+  const count = (d) => opts.find((x) => x.dep === d)?.n;
+  const max = Math.max(a?.matching || 0, c.size, 10);
+  const lean = usesLean(c.versions);
+  return `<h2>Who do you want to reach?</h2>
+    <p class="muted">The count updates as you click. Leads already contacted, marked do-not-contact, without an address of their own, or waiting in another campaign are always left out.</p>
+    <div class="cb-sec"><h4>Segment</h4><div class="seg" role="group" aria-label="Segment">${SEGS.map((k) => `<button data-kind="${k}" aria-pressed="${c.kind === k}">${KINDS_PL[k]}</button>`).join("")}</div></div>
+    <div class="cb-sec"><h4>Only leads who…</h4><div class="chips">
+      ${FILTERS.map(([k, label, get]) => `<button class="fchip" data-filter="${k}" aria-pressed="${get(f)}">${get(f) ? "✓" : "+"} ${label}</button>`).join("")}
+      <label class="fchip sel">are within <select data-km aria-label="Distance">${[["", "any distance"], [20, "20 km"], [40, "40 km"], [60, "60 km"], [100, "100 km"]].map(([v, t]) => `<option value="${v}" ${String(f.max_km || "") === String(v) ? "selected" : ""}>${t}</option>`).join("")}</select></label></div>
+      ${opts.length > 1 || (f.deps || []).length ? `<div class="chips" style="margin-top:8px"><span class="small muted" style="align-self:center">In the département</span>${shown.map((d) => `<button class="fchip" data-dep="${esc(d)}" aria-pressed="${(f.deps || []).includes(d)}">${esc(d)}${count(d) && !(f.deps || []).length ? ` <span class="small muted">· ${count(d)}</span>` : ""}</button>`).join("")}
+        ${rest.length ? `<select class="dep-more" data-dep-add aria-label="Another département"><option value="">+ another (${rest.length})</option>${rest.map((x) => `<option value="${esc(x.dep)}">${esc(x.dep)} · ${x.n}</option>`).join("")}</select>` : ""}
+        ${(f.deps || []).length ? `<button class="linkish small" data-dep-clear>any département</button>` : ""}</div>` : ""}
+      ${lean ? `<div class="note info" style="margin-top:10px"><span>${c.versions.filter((v) => `${v.subject} ${v.body}`.includes("{lean}")).map((v, i) => `Version ${LET[c.versions.indexOf(v)] || i + 1}`).join(" and ")} quotes their measured lean, so only leads with a measured lean of 1° or more are counted. <button class="linkish" data-go="emails">Change the email</button></span></div>` : ""}</div>
+    <div class="cb-two">
+      <div class="cb-sec"><h4><label for="cb-size">How many to contact</label></h4>
+        <div class="cb-big"><input type="number" id="cb-size" data-size min="1" max="${max}" value="${c.size}"><span class="muted">of ${a ? a.matching.toLocaleString("en") : "…"} matching</span></div>
+        <input type="range" data-size min="1" max="${max}" value="${Math.min(c.size, max)}" aria-label="How many to contact" style="width:100%;accent-color:var(--emerald)">
+        <p class="small muted" style="margin:4px 0 0">${a && a.chosen < c.size ? `Only ${a.chosen} match, so that's all it will reach. ` : ""}At ${c.daily_cap} a day: about ${plural(workdays(a?.chosen ?? c.size, c.daily_cap), "working day")}.${c.versions.length > 1 ? ` That's ${Math.floor((a?.chosen ?? c.size) / c.versions.length)} per version.` : ""}</p></div>
+      <div class="cb-sec"><h4>Who goes first</h4><div class="cb-opts">${[["small", "Small and new first", "then by score"], ["score", "Best score first", ""], ["random", "At random", "fairest when comparing versions"]].map(([k, t, h]) => `<button data-order="${k}" aria-pressed="${c.order === k}"><b>${t}</b> <span class="small muted">${h}</span></button>`).join("")}</div></div>
+    </div>
+    <div class="cb-sec"><h4>The first ones <span class="small muted" style="text-transform:none;letter-spacing:0;font-weight:400">untick anyone you'd rather call, or skip</span></h4>
+      ${!a ? `<p class="muted small">Counting…</p>` : !a.preview.length ? `<div class="note warn">No lead matches. Remove a filter above.</div>`
+        : `<div class="cb-list">${a.preview.map((l) => `<label class="cb-row"><input type="checkbox" class="chk" data-keep="${l.id}" checked><span class="nm"><b>${esc(l.person || l.name)}</b>${l.person ? ` <span class="muted">· ${esc(l.name)}</span>` : ""}</span><span class="muted">${esc(l.city || "")}${l.dep ? ` (${esc(l.dep)})` : ""}</span><span class="mono small">${l.lean_median != null ? `${l.lean_median.toFixed(1).replace(".", ",")}°` : ""}</span><span class="small" style="color:var(--ink)">${esc((l.small_new || [])[0]?.replace("_", " ") || "")}</span><button class="linkish small" data-peek="${l.id}" type="button">open</button></label>`).join("")}</div>
+           ${a.chosen > a.preview.length ? `<p class="small muted" style="margin:6px 0 0">…and ${a.chosen - a.preview.length} more, in this order.</p>` : ""}`}
+      ${a?.excluded.length ? `<p class="small muted" style="margin:8px 0 0">Left out by you: ${a.excluded.map((l) => `${esc(l.person || l.name)} <button class="linkish small" data-unexclude="${l.id}">put back</button>`).join(" · ")}</p>` : ""}</div>`;
+}
+
+function stepEmails() {
+  const c = B.c, v = c.versions[B.ver] || c.versions[0];
+  const many = c.versions.length > 1;
+  const ds = B.dossiers || [];
+  const imgs = ds.flatMap((d) => d.images.map((x) => ({ ...x, dossier: d.name })));
+  const picked = new Set(v.asset_ids);
+  const VARS = ["prenom", "agence", "ville", "lean", "nb_images", "signature"];
+  return `<h2>What do they get?</h2>
+    <p class="muted">${many ? "Each lead gets one version, at random, in equal shares. Change one thing between versions (the subject, the length, the images) to learn what works." : "Write the email. Add a version B to compare two emails on the same leads."}</p>
+    <div class="cb-vtabs" role="tablist" aria-label="Versions">${c.versions.map((x, i) => `<button role="tab" data-ver="${i}" aria-selected="${i === B.ver}"><span class="vl" style="background:${VCOL[i]}">${LET[i]}</span>${esc(x.name && x.name !== LET[i] ? x.name : `Version ${LET[i]}`)}${many ? ` <span class="small muted">${Math.round(100 / c.versions.length)} %</span>` : ""}</button>`).join("")}
+      ${c.versions.length < 4 ? `<button class="cb-add" data-add-ver>+ Version ${LET[c.versions.length]} <span class="small muted">starts as a copy</span></button>` : ""}</div>
+    <div class="cb-ed">
+      <div class="row"><label class="small muted" style="flex:1">Short name, for the results<input class="input" data-v="name" value="${esc(v.name && v.name !== LET[B.ver] ? v.name : "")}" placeholder="e.g. Long, with 3 images"></label>${many ? `<button class="btn ghost danger sm" data-del-ver style="align-self:end">Remove version ${LET[B.ver]}</button>` : ""}</div>
+      <label class="small muted">Subject<input class="input cb-subj" data-v="subject" value="${esc(v.subject)}" placeholder="{prenom}, votre avis sur ces retouches ?"></label>
+      <label class="small muted">Email<textarea class="input mailbody" data-v="body" lang="fr">${esc(v.body)}</textarea></label>
+      <div class="ins-row"><span class="small muted">Insert</span>${VARS.map((k) => `<button type="button" class="chip mono" data-ins="{${k}}">{${k}}</button>`).join("")}</div>
+      ${aiBar(B.ai)}
+      <div class="cb-imgs"><div class="row"><h4 style="margin:0">Images</h4><span class="small muted">${picked.size ? `${plural(picked.size, "image")} attached` : "none attached"}</span><span class="grow"></span><a class="small" href="#dossiers">Manage dossiers</a></div>
+        ${imgs.length ? ds.filter((d) => d.images.length).map((d) => `<div class="cb-dos"><span class="small muted">${esc(d.name)}</span><div class="cb-thumbs">${d.images.map((x) => `<button type="button" class="cb-th" data-img="${x.id}" aria-pressed="${picked.has(x.id)}" title="${esc(x.name)}${x.sent ? ` · sent ${x.sent}×, ${pct(x.replied / x.sent)} replied` : ""}"><img src="${x.thumb}" alt="${esc(x.name)}" loading="lazy"><span class="ck">${picked.has(x.id) ? small(I.check, 12) : ""}</span></button>`).join("")}</div></div>`).join("")
+          : `<p class="small muted" style="margin:0">No images yet. <a href="#dossiers">Add before/after photos to a dossier</a>, then tick them here.</p>`}
+      </div>
+      <div class="cb-prev"><div class="row"><h4 style="margin:0">What a real lead gets</h4><span class="grow"></span><button class="btn sm" data-test>${small(I.send)} Send ${many ? "every version" : "it"} to me</button></div><div data-preview class="pv"><p class="small muted" style="padding:12px 16px;margin:0">Loading…</p></div></div>
+    </div>
+    ${many ? `<div class="cb-sec"><h4>The winner is the version with more…</h4><div class="cb-opts row">${[["reply", "Replies", "any answer that isn't a stop"], ["interested", "Interested leads", "a call, a free test or more"]].map(([k, t, h]) => `<button data-metric="${k}" aria-pressed="${c.metric === k}"><b>${t}</b> <span class="small muted">${h}</span></button>`).join("")}</div></div>` : ""}
+    <label class="check"><input type="checkbox" class="chk" data-followups ${c.followups_on ? "checked" : ""}> Follow-ups on day 4 and day 10 if they don't reply, the same for every version. Each waits for your review.</label>`;
+}
+
+let pvTimer;
+function preview() {
+  clearTimeout(pvTimer);
+  pvTimer = setTimeout(async () => {
+    const v = B.c.versions[B.ver], el = $("[data-preview]");
+    if (!v || !el) return;
+    try {
+      const p = await api("/api/templates/preview", { method: "POST", body: { subject: v.subject, body: v.body, segment: B.c.kind, asset_ids: v.asset_ids, lead_id: B.aud?.preview?.[0]?.id ?? null } });
+      if (!p.lead) { el.innerHTML = `<p class="small muted" style="padding:12px 16px;margin:0">No lead to fill it in for yet.</p>`; return; }
+      const imgs = (B.dossiers || []).flatMap((d) => d.images);
+      el.innerHTML = `<div class="pv-h"><span>To</span><b>${esc(p.to)}</b><span>Subject</span><b>${esc(p.subject)}</b></div><div class="pv-b">${esc(p.body)}<div class="optout">--\n${esc(p.footer)}</div></div>
+        ${v.asset_ids.length ? `<div class="pv-a">${v.asset_ids.map((id) => imgs.find((x) => x.id === id)).filter(Boolean).map((x) => `<img src="${x.thumb}" alt="${esc(x.name)}">`).join("")}</div>` : ""}`;
+    } catch (e) { el.innerHTML = `<p class="small muted" style="padding:12px 16px;margin:0">${esc(e.message)}</p>`; }
+  }, 250);
+}
+
+function wireEmails() {
+  const el = $("[data-step]");
+  const subj = $("[data-v=subject]", el), body = $("[data-v=body]", el);
+  wireAiBar($(".ai-bar", el), {
+    subject: subj, body,
+    extra: () => ({ segment: B.c.kind, step: 0 }),
+  });
+  let last = body;
+  subj.addEventListener("focus", () => (last = subj));
+  body.addEventListener("focus", () => (last = body));
+  el.addEventListener("mousedown", (e) => { if (e.target.closest("[data-ins]")) { e.preventDefault(); last.focus(); } });
+  preview();
+}
+
+function stepSending() {
+  const c = B.c;
+  const today = new Date().toISOString().slice(0, 10);
+  return `<h2>When does it go out?</h2>
+    <p class="muted">From your mailbox, a few minutes apart, Monday to Friday 9:00–18:00, so each email stays personal and your address stays healthy.</p>
+    <div class="form-grid">
+      <label>Emails a day<input class="input" type="number" min="1" max="60" data-f="daily_cap" value="${c.daily_cap}"></label>
+      <label>Start<input class="input" type="date" min="${today}" data-f="start_on" value="${esc(c.start_on || "")}"><span class="small muted">empty: as soon as you start it</span></label>
+    </div>
+    <div class="cb-sec"><h4>Before each email goes out</h4><div class="cb-opts">
+      <button data-review="daily" aria-pressed="${c.review !== "auto"}"><b>I review each morning's batch</b><span class="small muted" style="display:block">The day's emails wait in Today. Skim, edit if you like, approve them in one click.</span></button>
+      <button data-review="auto" aria-pressed="${c.review === "auto"}"><b>Approved once, for the whole campaign</b><span class="small muted" style="display:block">First emails go out on their own once started. Follow-ups still wait for you.</span></button></div></div>
+    ${c.versions.length > 1 ? `<div class="note ok">${small(I.check)} <span>When one version is clearly better, the campaign page offers to send only that one to the leads left. Nothing switches without your click.</span></div>` : ""}`;
+}
+
+function problems() {
+  const c = B.c, a = B.aud, out = [];
+  if (!a || !a.chosen) out.push(["who", "No lead matches the filters."]);
+  c.versions.forEach((v, i) => {
+    if (!v.subject.trim() || !v.body.trim()) out.push(["emails", `Version ${LET[i]} needs a subject and a text.`]);
+    const unknown = [...`${v.subject} ${v.body}`.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).filter((k) => !["prenom", "agence", "ville", "lean", "n", "site", "nb_images", "signature"].includes(k));
+    if (unknown.length) out.push(["emails", `Version ${LET[i]}: {${unknown[0]}} isn't a known placeholder.`]);
+  });
+  if (c.versions.length > 1 && a && a.chosen / c.versions.length < 20) out.push(["who", `Only ${Math.floor(a.chosen / c.versions.length)} leads per version: too few to tell versions apart. Aim for 40 or more each.`, true]);
+  return out;
+}
+
+function drawSummary() {
+  const el = $("[data-summary]");
+  if (!el) return;
+  const c = B.c, a = B.aud, f = c.filters;
+  const chosen = a ? a.chosen : c.size;
+  const filt = FILTERS.filter(([, , get]) => get(f)).map(([, label]) => label);
+  if (f.max_km) filt.push(`within ${f.max_km} km`);
+  if ((f.deps || []).length) filt.push(`in ${f.deps.join(", ")}`);
+  const nImg = new Set(c.versions.flatMap((v) => v.asset_ids)).size;
+  const probs = problems();
+  const blocking = probs.filter((p) => !p[2]);
+  el.innerHTML = `<section class="cb-sum"><h4>This campaign</h4>
+    <div class="cb-big2"><div><b>${chosen.toLocaleString("en")}</b><span>leads</span></div><div><b>${workdays(chosen, c.daily_cap)}</b><span>working days</span></div></div>
+    <dl><dt>Who</dt><dd>${esc(KINDS_PL[c.kind])}${filt.length ? ` who ${esc(filt.join(", "))}` : ""}</dd>
+      <dt>Order</dt><dd>${esc({ small: "Small and new first", score: "Best score first", random: "At random" }[c.order])}</dd>
+      <dt>Emails</dt><dd>${c.versions.length > 1 ? `${c.versions.length} versions, ${Math.round(100 / c.versions.length)} % each` : "One version"}${nImg ? ` · ${plural(nImg, "image")}` : ""}${c.followups_on ? " · follow-ups" : ""}</dd>
+      <dt>Sending</dt><dd>${c.daily_cap} a day${c.start_on ? `, from ${esc(new Date(c.start_on).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))}` : ""} · ${c.review === "auto" ? "approved once" : "you approve each morning"}</dd></dl>
+    ${probs.map(([step, t, soft]) => `<button class="cb-prob ${soft ? "soft" : ""}" data-go="${step}">${esc(t)}</button>`).join("")}
+    <button class="btn cb-go" data-start ${blocking.length ? "disabled" : ""}>Start campaign</button></section>
+    <section class="card small"><b>Not sure yet?</b> It's saved as a draft as you go. Come back to it from Campaigns.</section>`;
+}
+
+function confirmStart() {
+  const c = B.c, a = B.aud, probs = problems().filter((p) => !p[2]);
+  if (probs.length) { B.step = probs[0][0]; drawSteps(); drawStep(); toast(probs[0][1], { err: true }); return; }
+  const startsLater = c.start_on && c.start_on > new Date().toISOString().slice(0, 10);
+  const sheet = openModal(`<div class="sheet-h"><h2>Start “${esc(c.name)}”?</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+    <div class="sheet-b"><ul class="cb-check">
+      <li>${small(I.check)} <span><b>${plural(a.chosen, "lead")}</b> get ${c.versions.length > 1 ? `one of <b>${c.versions.length} versions</b>, at random` : "the email"}.</span></li>
+      <li>${small(I.check)} <span><b>${c.daily_cap} a day</b>, ${startsLater ? `from ${esc(c.start_on)}` : "from today, inside sending hours"}: about ${plural(workdays(a.chosen, c.daily_cap), "working day")}.</span></li>
+      <li>${small(I.check)} <span>${c.review === "auto" ? "First emails go out <b>without asking you</b>." : "Each morning's emails <b>wait for you in Today</b> before anything goes out."}</span></li>
+      <li>${small(I.check)} <span>The list of leads is fixed when you start. You can add more later, pause, or stop.</span></li></ul>
+      <div class="row"><span class="grow"></span><button class="btn" data-close>Not yet</button><button class="btn primary" data-go-start>Start</button></div></div>`, { narrow: true });
+  sheet.onclick = async (e) => {
+    const t = e.target.closest("button");
+    if (!t) return;
+    if (t.dataset.close !== undefined) return closeModal();
+    if (t.dataset.goStart !== undefined) {
+      await busy(t, async () => {
+        await flushSave();
+        const r = await api(`/api/campaigns/${c.id}/start`, { method: "POST" });
+        closeModal();
+        confetti();
+        toast(r.written ? `Started. ${plural(r.written, "email")} written for today: approve them in Today.` : `Started with ${plural(r.leads, "lead")}. The first emails are written ${startsLater ? `on ${c.start_on}` : "at the next sending hour"}.`, { ms: 6000 });
+        B.c = null;
+        changed();
+      });
+    }
+  };
+}
+
+function onBuilderInput(e) {
+  const t = e.target, c = B.c;
+  if (!c || c.status !== "draft") return;
+  const v = c.versions[B.ver];
+  if (t.dataset.f === "name") { c.name = t.value; save(); return; }
+  if (t.dataset.f === "daily_cap") { c.daily_cap = Math.max(1, Math.min(60, +t.value || 1)); save(); drawSteps(); return; }
+  if (t.dataset.f === "start_on") { c.start_on = t.value || null; save(); drawSummary(); return; }
+  if (t.dataset.v && v) {
+    v[t.dataset.v] = t.value;
+    save();
+    if (t.dataset.v !== "name") { preview(); drawSummary(); }
+    if (t.dataset.v === "body" && usesLean(c.versions) !== B.lean) { B.lean = usesLean(c.versions); refreshAudience(); }
+    return;
+  }
+  if (t.matches("[data-size]")) {
+    c.size = Math.max(1, +t.value || 1);
+    for (const o of document.querySelectorAll("[data-size]")) if (o !== t) o.value = c.size;
+    save();
+    refreshAudience();
+  }
+}
+
+async function onBuilderClick(e) {
+  const t = e.target.closest("button, label.cb-row");
+  if (!t || !B.c) return;
+  const c = B.c, d = t.dataset, f = c.filters;
+  if (t.matches("label.cb-row")) return;
+  if (d.go) { await flushSave(); B.step = d.go; drawSteps(); drawStep(); $("[data-step]")?.scrollIntoView({ block: "start", behavior: "smooth" }); return; }
+  if (d.start !== undefined) return confirmStart();
+  if (d.delete !== undefined) {
+    if (d.confirm !== "1") { d.confirm = "1"; t.textContent = "Click again to delete"; return; }
+    await api(`/api/campaigns/${c.id}`, { method: "DELETE" });
+    B.c = null;
+    location.hash = "campaigns";
+    return;
+  }
+  if (d.kind) { c.kind = d.kind; f.deps = undefined; B.depOptions = []; c.excluded = []; }
+  else if (d.filter) { const def = FILTERS.find((x) => x[0] === d.filter); def[3](f, !def[2](f)); }
+  else if (d.dep) { const s = new Set(f.deps || []); s.has(d.dep) ? s.delete(d.dep) : s.add(d.dep); f.deps = s.size ? [...s] : undefined; }
+  else if (d.depClear !== undefined) f.deps = undefined;
+  else if (d.order) c.order = d.order;
+  else if (d.unexclude) c.excluded = c.excluded.filter((x) => x !== +d.unexclude);
+  else if (d.peek) { openLead(+d.peek); return; }
+  else if (d.ver) { B.ver = +d.ver; drawStep(); return; }
+  else if (d.addVer !== undefined) {
+    const cur = c.versions[B.ver];
+    c.versions.push({ id: null, name: "", subject: cur.subject, body: cur.body, asset_ids: [...cur.asset_ids], attach_photo: cur.attach_photo });
+    B.ver = c.versions.length - 1;
+    if (c.order !== "random" && c.versions.length === 2) toast("Tip: “At random” in step 1 makes the comparison fairest.");
+    save(); drawSteps(); drawStep(); refreshAudience(); return;
+  } else if (d.delVer !== undefined) {
+    if (d.confirm !== "1") { d.confirm = "1"; t.textContent = "Click again to remove"; return; }
+    c.versions.splice(B.ver, 1);
+    B.ver = 0;
+    save(); drawSteps(); drawStep(); refreshAudience(); return;
+  } else if (d.img) {
+    const v = c.versions[B.ver], id = +d.img;
+    v.asset_ids = v.asset_ids.includes(id) ? v.asset_ids.filter((x) => x !== id) : [...v.asset_ids, id];
+    save(); drawStep(); drawSummary(); return;
+  } else if (d.ins) {
+    const ta = document.activeElement?.matches?.("[data-v=subject], [data-v=body]") ? document.activeElement : $("[data-v=body]");
+    const p = ta.selectionStart ?? ta.value.length;
+    ta.value = ta.value.slice(0, p) + d.ins + ta.value.slice(ta.selectionEnd ?? p);
+    ta.selectionStart = ta.selectionEnd = p + d.ins.length;
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    return;
+  } else if (d.metric) c.metric = d.metric;
+  else if (d.review) c.review = d.review;
+  else if (d.test !== undefined) {
+    await busy(t, async () => {
+      await flushSave();
+      const r = await api(`/api/campaigns/${c.id}/test`, { method: "POST", body: {} });
+      toast(`${plural(r.sent, "test email")} sent to ${r.to}, filled in for ${r.lead}.`, { ms: 6000 });
+    });
+    return;
+  } else return;
+  save();
+  if (["kind", "filter", "dep", "depClear", "order", "unexclude"].some((k) => d[k] !== undefined)) { drawStep(); refreshAudience(); }
+  else { drawSteps(); drawStep(); }
+}
+
+function onBuilderChange(e) {
+  const t = e.target, c = B.c;
+  if (!c || c.status !== "draft") return;
+  if (t.matches("[data-km]")) { c.filters.max_km = t.value ? +t.value : undefined; save(); refreshAudience(); }
+  else if (t.matches("[data-dep-add]") && t.value) { c.filters.deps = [...new Set([...(c.filters.deps || []), t.value])]; save(); drawStep(); refreshAudience(); }
+  else if (t.matches("[data-keep]")) { c.excluded = [...new Set([...c.excluded, +t.dataset.keep])]; save(); refreshAudience(); }
+  else if (t.matches("[data-followups]")) { c.followups_on = t.checked; save(); drawSummary(); }
+}
+
+// One set of listeners on the canvas; they act only while a draft is shown.
+let wired = false;
+function wire() {
+  if (wired) return;
+  wired = true;
+  C().addEventListener("input", (e) => { if ($(".cb", C())) onBuilderInput(e); });
+  C().addEventListener("change", (e) => { if ($(".cb", C())) onBuilderChange(e); });
+  C().addEventListener("click", (e) => { if ($(".cb", C())) onBuilderClick(e).catch(fail); });
+}
+
+// --- results (started) ----------------------------------------------------------------------
+
+const STATE = {
+  not_sent: ["Not written yet", ""], to_review: ["Waiting for your review", "todo"], approved: ["Approved, going out", ""],
+  waiting: ["Sent, no reply yet", ""], replied: ["Replied", "ok"], interested: ["Interested", "ok"],
+  stopped: ["Asked to stop", "bad"], failed: ["Not sent (error)", "bad"], skipped: ["Skipped (contacted another way)", ""],
+};
+let leadFilter = "replied";
+
+function renderResults(c) {
+  const r = c.results, t = r.totals, test = r.test;
+  const live = c.status === "running" || c.status === "paused";
+  const counts = { replied: t.replied + t.stopped, review: t.to_review + t.approved, waiting: t.sent - t.replied - t.stopped, not_sent: t.not_sent, all: t.leads };
+  if (!counts[leadFilter] && leadFilter !== "all") leadFilter = counts.replied ? "replied" : counts.review ? "review" : counts.waiting ? "waiting" : "all";
+  const show = r.leads.filter((l) => leadFilter === "all" || (leadFilter === "replied" ? ["replied", "interested", "stopped"].includes(l.state) : leadFilter === "review" ? ["to_review", "approved"].includes(l.state) : l.state === leadFilter));
+  const vcard = (v, i) => {
+    const tv = test?.versions.find((x) => x.template_id === v.template_id);
+    const lead = test && test.leader === v.letter && t.sent;
+    const won = test?.winner_id === v.template_id;
+    return `<article class="cr-v ${lead || won ? "lead" : ""}" style="--vc:${VCOL[i]}">
+      <div class="row"><span class="vl" style="background:${VCOL[i]}">${v.letter}</span><div style="flex:1;min-width:0"><b>${esc(v.name && v.name !== v.letter ? v.name : `Version ${v.letter}`)}</b><div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">“${esc(v.subject)}”${v.asset_ids.length ? ` · ${plural(v.asset_ids.length, "image")}` : ""}</div></div>${won ? `<span class="pill st-customer">Winner</span>` : lead ? `<span class="pill st-pilot">Ahead</span>` : ""}</div>
+      ${v.asset_ids.length ? `<div class="cr-imgs">${v.asset_ids.map((id) => `<img src="/api/assets/${id}/thumb" alt="">`).join("")}</div>` : ""}
+      <div class="cr-nums"><div><b>${v.sent}</b><span>sent</span></div><div><b>${v.replied}</b><span>replied</span></div><div><b>${v.interested}</b><span>interested</span></div><div><b style="color:var(--vc)">${v.sent ? pct((test?.metric === "interested" ? v.interested : v.replied) / v.sent) : "–"}</b><span>${test?.metric === "interested" ? "interest" : "reply"} rate</span></div></div>
+      ${tv && tv.sent ? `<div class="cr-bar"><span class="small muted">Likely ${test.metric === "interested" ? "interest" : "reply"} rate: ${pct(tv.low)} to ${pct(tv.high)}</span><div class="rng"><span style="left:${tv.low * 100}%;width:${Math.max(1, (tv.high - tv.low) * 100)}%"></span><i style="left:${(tv.rate || 0) * 100}%"></i></div></div>
+        <div class="cr-bar"><span class="small muted">Chance of being the best: ${pct(tv.chance_best)}</span><div class="pb"><span style="width:${tv.chance_best * 100}%"></span></div></div>` : `<p class="small muted" style="margin:0">${v.planned} planned · nothing sent yet</p>`}
+    </article>`;
+  };
+  const maxDay = Math.max(1, ...r.days.map((d) => d.sent));
+  C().innerHTML = `<div class="view wide cr">
+    <div class="topline"><div style="flex:1;min-width:280px"><p class="small muted" style="margin:0"><a href="#campaigns">Campaigns</a> / ${esc(KINDS_PL[c.kind])}</p>
+      <div class="row"><h1>${esc(c.name)}</h1>${statusPill(c.status)}</div>
+      <div class="sub">${c.started_at ? `Started ${esc(when(c.started_at))}` : ""} · ${c.daily_cap} a day · ${c.review === "auto" ? "approved once" : "you approve each morning"} · ${t.sent} of ${t.leads} emailed${r.days_left && live ? ` · about ${plural(r.days_left, "working day")} to go` : ""}</div></div>
+      <div class="row">${c.status === "running" ? `<button class="btn" data-pause>Pause</button>` : c.status === "paused" ? `<button class="btn primary" data-resume>Resume</button>` : ""}
+        ${c.status !== "draft" ? `<button class="btn" data-more>Add leads</button>` : ""}<button class="btn" data-dup title="A new draft with the same settings and emails">Duplicate</button>
+        ${live ? `<button class="btn" data-settings>Settings</button>` : ""}</div></div>
+    ${c.status === "paused" ? `<div class="note warn" style="margin-bottom:12px">Paused: no new emails are written. Approved first emails went back to review.</div>` : ""}
+    ${c.start_on && c.start_on > new Date().toISOString().slice(0, 10) ? `<div class="note info" style="margin-bottom:12px">Starts on ${esc(c.start_on)}: the first emails are written that morning.</div>` : ""}
+    <div class="cp-bar big" role="img" aria-label="${t.replied} replied, ${t.sent - t.replied} waiting, ${t.to_review + t.approved} written, ${t.not_sent} not written yet"><span style="flex:${t.replied};background:var(--warn)"></span><span style="flex:${t.sent - t.replied};background:var(--emerald)"></span><span style="flex:${t.to_review + t.approved};background:var(--mint)"></span><span style="flex:${t.not_sent}"></span></div>
+    <div class="cr-kpi"><div><b>${t.sent}</b><span>emailed, of ${t.leads}</span></div><div><b>${t.replied}${t.sent ? ` <small>${pct(t.replied / t.sent)}</small>` : ""}</b><span>replied</span></div><div><b>${t.interested}</b><span>interested</span></div><div><b>${t.pilots}</b><span>free tests</span></div><div><b>${t.stopped}</b><span>asked to stop</span></div>
+      ${t.to_review ? `<a href="#today" class="todo"><b>${t.to_review}</b><span>to review in Today →</span></a>` : ""}</div>
+    ${r.versions.length > 1 ? `<section class="card cr-test"><div class="row"><h2>A/B test: which email works better?</h2><span class="small muted">counted on ${test?.metric === "interested" ? "interested leads" : "replies"} · ${Math.round(100 / r.versions.length)} % of leads each</span></div>
+        ${test?.suggest ? `<div class="cr-verdict win"><span><b>Version ${esc(test.suggest.letter)} is clearly better.</b> ${esc(test.verdict.text)} ${plural(test.suggest.unsent, "lead")} haven't had their email yet.</span><button class="btn primary" data-winner="${test.suggest.template_id}" data-letter="${esc(test.suggest.letter)}" data-unsent="${test.suggest.unsent}">Send ${esc(test.suggest.letter)} to the ${test.suggest.unsent} left</button><button class="btn" data-keep-testing>Keep testing</button></div>`
+          : test?.status === "stopped" ? `<div class="cr-verdict">${small(I.check)} <span>Test ended: ${esc(r.versions.find((v) => v.template_id === test.winner_id)?.letter || "?")} won, and the leads left get it.</span></div>`
+          : `<div class="cr-verdict ${test?.verdict.state || ""}"><span>${esc(test?.verdict.text || "")}</span>${live && t.sent >= 10 ? `<button class="btn sm" data-pick>Pick a winner myself</button>` : ""}</div>`}
+        <div class="cr-vs">${r.versions.map(vcard).join("")}</div>
+        <p class="small muted" style="margin:0">“Likely rate” is where each version's true rate probably sits, given how few emails have gone out; the ranges narrow as more go. The verdict waits until each version has about 20 emails.</p></section>`
+      : `<section class="card cr-test"><div class="cr-vs one">${r.versions.map(vcard).join("")}</div></section>`}
+    <div class="cr-low">
+      <section class="card"><h2>Day by day</h2>${r.days.length ? `<div class="cr-days">${r.days.map((d) => `<div title="${d.day}: ${d.sent} sent, ${d.replies} replies"><span class="b" style="height:${(d.sent / maxDay) * 100}%"><span class="r" style="height:${d.sent ? Math.min(100, (d.replies / d.sent) * 100) : 0}%"></span></span><span class="small muted">${new Date(d.day).toLocaleDateString("en-GB", { weekday: "short" }).slice(0, 2)}</span></div>`).join("")}</div>
+        <p class="small muted" style="margin:6px 0 0"><span class="sw" style="background:var(--emerald)"></span> sent · <span class="sw" style="background:var(--warn)"></span> replies</p>` : `<p class="small muted">Nothing sent yet.</p>`}</section>
+      <section class="card"><div class="row"><h2 style="flex:1">The ${t.leads} leads</h2><div class="seg" role="group" aria-label="Show">${[["replied", "Replied"], ["review", "To review"], ["waiting", "Waiting"], ["not_sent", "Not written"], ["all", "All"]].map(([k, l]) => `<button data-lf="${k}" aria-pressed="${leadFilter === k}">${l} <span class="mono small">${counts[k]}</span></button>`).join("")}</div></div>
+        ${show.length ? `<div class="cr-leads">${show.slice(0, 200).map((l) => `<button class="cr-lead" data-open="${l.id}"><span class="vl sm" style="background:${VCOL[LET.indexOf(l.letter)] || "var(--dim)"}">${esc(l.letter)}</span><span class="nm"><b>${esc(l.person || l.name)}</b> <span class="muted small">${esc(l.city || "")}</span>${l.reply ? `<span class="small muted q">“${esc(l.reply)}”</span>` : ""}</span><span class="chip-s ${STATE[l.state]?.[1] || ""}">${STATE[l.state]?.[0] || l.state}</span><span class="small muted">${esc(l.at ? when(l.at) : "")}</span></button>`).join("")}</div>` : `<p class="small muted">Nobody here.</p>`}</section>
+    </div></div>`;
+  C().onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    const d = b.dataset;
+    try {
+      if (d.lf) { leadFilter = d.lf; renderResults(c); }
+      else if (d.open) openLead(+d.open);
+      else if (d.pause !== undefined || d.resume !== undefined) await busy(b, async () => { await api(`/api/campaigns/${c.id}/status`, { method: "POST", body: { status: d.pause !== undefined ? "paused" : "running" } }); toast(d.pause !== undefined ? "Paused. Nothing new is written until you resume." : "Resumed."); changed(); });
+      else if (d.dup !== undefined) await busy(b, async () => { const x = await api(`/api/campaigns/${c.id}/duplicate`, { method: "POST" }); location.hash = `campaign/${x.id}`; });
+      else if (d.more !== undefined) addLeads(c);
+      else if (d.settings !== undefined) liveSettings(c);
+      else if (d.winner) {
+        if (d.confirm !== "1") { d.confirm = "1"; b.textContent = `Confirm: everyone left gets ${d.letter}`; return; }
+        await busy(b, async () => { const x = await api(`/api/campaigns/${c.id}/winner`, { method: "POST", body: { template_id: +d.winner } }); toast(`Done: the ${d.unsent} leads left get version ${d.letter}${x.moved ? "" : ""}.`); confetti(); changed(); });
+      } else if (d.keepTesting !== undefined) { b.closest(".cr-verdict").hidden = true; toast("Keep going: the banner comes back on the next visit while it's still clear."); }
+      else if (d.pick !== undefined) pickWinner(c);
+    } catch (err) { fail(err); }
+  };
+}
+
+function addLeads(c) {
+  const sheet = openModal(`<div class="sheet-h"><h2>Add leads to “${esc(c.name)}”</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+    <form class="sheet-b"><label>How many more<input class="input" type="number" name="n" min="1" max="1000" value="${Math.max(10, c.daily_cap * 5)}" autofocus></label>
+    <p class="small muted" style="margin:0">The next ones matching the same filters, in the same order.${c.results.test?.status === "stopped" ? " They get the winning version." : " They get the versions in equal shares."}</p>
+    <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Add</button></div></form>`, { narrow: true });
+  sheet.onclick = (e) => { if (e.target.closest("[data-close]")) closeModal(); };
+  sheet.onsubmit = async (e) => {
+    e.preventDefault();
+    await busy(e.target.querySelector(".primary"), async () => {
+      const r = await api(`/api/campaigns/${c.id}/more`, { method: "POST", body: { n: +e.target.n.value } });
+      closeModal();
+      toast(r.added ? `${plural(r.added, "lead")} added.` : "Nobody else matches the filters.");
+      changed();
+    });
+  };
+}
+
+function liveSettings(c) {
+  const sheet = openModal(`<div class="sheet-h"><h2>Settings</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+    <form class="sheet-b"><label>Name<input class="input" name="name" value="${esc(c.name)}"></label>
+    <label>Emails a day<input class="input" type="number" name="daily_cap" min="1" max="60" value="${c.daily_cap}"></label>
+    <label class="check"><input type="checkbox" class="chk" name="auto" ${c.review === "auto" ? "checked" : ""}> Approve first emails automatically (no morning review)</label>
+    <label class="check"><input type="checkbox" class="chk" name="fu" ${c.followups_on ? "checked" : ""}> Write follow-ups after each first email</label>
+    <p class="small muted" style="margin:0">Who it reaches and its emails are fixed once started. To change them, duplicate it.</p>
+    <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`, { narrow: true });
+  sheet.onclick = (e) => { if (e.target.closest("[data-close]")) closeModal(); };
+  sheet.onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    await busy(f.querySelector(".primary"), async () => {
+      await api(`/api/campaigns/${c.id}`, { method: "PUT", body: { name: f.name.value, daily_cap: +f.daily_cap.value, review: f.auto.checked ? "auto" : "daily", followups_on: f.fu.checked } });
+      closeModal();
+      changed();
+    });
+  };
+}
+
+function pickWinner(c) {
+  const vs = c.results.versions;
+  const sheet = openModal(`<div class="sheet-h"><h2>Pick the winner</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+    <div class="sheet-b"><p class="muted" style="margin:0">Everyone not emailed yet gets the version you pick. The test stops; its results stay here.</p>
+    ${vs.map((v) => `<button class="btn" data-w="${v.template_id}" style="justify-content:flex-start">Version ${esc(v.letter)} · ${esc(v.name)} · ${v.replied}/${v.sent} replied</button>`).join("")}</div>`, { narrow: true });
+  sheet.onclick = async (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.close !== undefined) return closeModal();
+    if (b.dataset.w) await busy(b, async () => { await api(`/api/campaigns/${c.id}/winner`, { method: "POST", body: { template_id: +b.dataset.w } }); closeModal(); toast("Test ended. The leads left get that version."); changed(); });
+  };
+}
+
+// --- dossiers ---------------------------------------------------------------------------------
+
+let curDossier = null, pairing = null;
+export const dossiersView = {
+  async render() {
+    const ds = (await api("/api/dossiers")).items;
+    if (!ds.find((d) => d.id === curDossier)) curDossier = ds[0]?.id ?? null;
+    const d = ds.find((x) => x.id === curDossier);
+    C().innerHTML = `<div class="view wide">
+      <div class="topline"><div><p class="small muted" style="margin:0"><a href="#campaigns">Campaigns</a> / Dossiers</p><h1>Dossiers</h1><div class="sub">Sets of photos you send again and again. In a campaign, each email version ticks the images it carries.</div></div><span class="grow"></span><button class="btn primary" data-new-dossier>${small(I.plus)} New dossier</button></div>
+      <div class="ds">
+        <ul class="ds-list">${ds.map((x) => `<li><button data-dossier="${x.id}" aria-current="${x.id === curDossier}">${x.images[0] ? `<img src="${x.images[0].thumb}" alt="">` : `<span class="ds-empty">empty</span>`}<span><b>${esc(x.name)}</b><span class="small muted">${plural(x.images.length, "image")}${x.used_by.length ? ` · in ${plural(x.used_by.length, "campaign")}` : ""}</span></span></button></li>`).join("") || `<li class="small muted">No dossier yet.</li>`}</ul>
+        ${d ? `<section class="card ds-main">
+          <div class="row"><input class="cb-name sm" data-dname value="${esc(d.name)}" aria-label="Dossier name"><span class="grow"></span>
+            ${d.images.length >= 2 ? `<button class="btn" data-pair>${pairing ? "Cancel" : "Make a before/after"}</button>` : ""}<button class="btn ghost danger sm" data-archive-dossier>Remove dossier</button></div>
+          ${d.used_by.length ? `<p class="small muted" style="margin:0">Used by ${esc(d.used_by.join(", "))}.</p>` : ""}
+          ${pairing ? `<div class="note info">${small(I.note)} <span>${pairing.before ? "Now click the <b>retouched</b> photo." : "Click the <b>original</b> photo (before)."} The app puts them side by side with “Avant” and “Après” labels.</span></div>` : ""}
+          <div class="ds-grid">${d.images.map((x) => `<figure class="ds-img ${pairing?.before === x.id ? "sel" : ""}"><button class="ds-pic" data-pic="${x.id}" title="${pairing ? "Pick" : "Open"}"><img src="${x.thumb}" alt="${esc(x.name)}" loading="lazy"></button>
+              <figcaption><input class="ds-in" data-iname="${x.id}" value="${esc(x.name)}" aria-label="Image name"><span class="small muted">${x.sent ? `Sent ${x.sent}× · ${pct(x.replied / x.sent)} got a reply` : "Not sent yet"} · ${(x.size / 1e6).toFixed(1)} MB</span>
+              <span class="row" style="gap:6px">${ds.length > 1 ? `<select class="select sm" data-move="${x.id}" aria-label="Move to"><option value="">Move to…</option>${ds.filter((o) => o.id !== d.id).map((o) => `<option value="${o.id}">${esc(o.name)}</option>`).join("")}</select>` : ""}<button class="btn ghost danger sm" data-del-img="${x.id}">Remove</button></span></figcaption></figure>`).join("")}</div>
+          <label class="drop"><input type="file" multiple accept="image/jpeg,image/png,image/webp" data-up hidden>${small(I.arrow, 18)}<span><b>Drop photos here</b>, or click to choose. Ready-made before/after images, or the two photos to combine.</span></label>
+        </section>` : `<section class="card"><p class="muted">Create a dossier, then drop your before/after photos in it.</p></section>`}
+      </div></div>`;
+    const main = C();
+    main.onclick = async (e) => {
+      const b = e.target.closest("button");
+      if (!b) return;
+      const x = b.dataset;
+      try {
+        if (x.dossier) { curDossier = +x.dossier; pairing = null; this.render(); }
+        else if (x.newDossier !== undefined) { const n = await api("/api/dossiers", { method: "POST", body: { name: "New dossier" } }); curDossier = n.id; await this.render(); $("[data-dname]")?.select(); }
+        else if (x.pair !== undefined) { pairing = pairing ? null : { before: null }; this.render(); }
+        else if (x.pic) {
+          if (!pairing) { const img = d.images.find((i) => i.id === +x.pic); window.open(img.src, "_blank"); return; }
+          if (!pairing.before) { pairing.before = +x.pic; this.render(); return; }
+          if (pairing.before === +x.pic) return;
+          await busy(b, async () => { await api(`/api/dossiers/${d.id}/pair`, { method: "POST", body: { before_id: pairing.before, after_id: +x.pic } }); pairing = null; toast("Before/after made and added to this dossier."); this.render(); });
+        } else if (x.delImg) {
+          if (x.confirm !== "1") { x.confirm = "1"; b.textContent = "Sure?"; return; }
+          await api(`/api/assets/${x.delImg}`, { method: "PATCH", body: { archived: true } }); this.render();
+        } else if (x.archiveDossier !== undefined) {
+          if (x.confirm !== "1") { x.confirm = "1"; b.textContent = "Click again: remove it"; return; }
+          await api(`/api/dossiers/${d.id}`, { method: "PATCH", body: { archived: true } }); curDossier = null; this.render();
+        }
+      } catch (err) { fail(err); }
+    };
+    main.onchange = async (e) => {
+      const t = e.target;
+      try {
+        if (t.matches("[data-up]")) {
+          for (const file of [...t.files]) {
+            toast(`Adding ${file.name}…`);
+            const r = await fetch(`/api/assets?name=${encodeURIComponent(file.name)}&dossier_id=${d.id}`, { method: "POST", body: file });
+            if (!r.ok) fail(new Error(`${file.name}: ${(await r.json().catch(() => ({}))).detail || r.statusText}`));
+          }
+          this.render();
+        } else if (t.matches("[data-dname]")) await api(`/api/dossiers/${d.id}`, { method: "PATCH", body: { name: t.value } });
+        else if (t.matches("[data-iname]")) await api(`/api/assets/${t.dataset.iname}`, { method: "PATCH", body: { name: t.value } });
+        else if (t.matches("[data-move]") && t.value) { await api(`/api/assets/${t.dataset.move}`, { method: "PATCH", body: { dossier_id: +t.value } }); this.render(); }
+      } catch (err) { fail(err); }
+    };
+    main.ondragover = (e) => { if (e.dataTransfer?.types?.includes("Files")) { e.preventDefault(); $(".drop", main)?.classList.add("over"); } };
+    main.ondrop = async (e) => {
+      if (!d || !e.dataTransfer?.files?.length) return;
+      e.preventDefault();
+      for (const file of [...e.dataTransfer.files]) {
+        const r = await fetch(`/api/assets?name=${encodeURIComponent(file.name)}&dossier_id=${d.id}`, { method: "POST", body: file });
+        if (!r.ok) fail(new Error(`${file.name}: ${(await r.json().catch(() => ({}))).detail || r.statusText}`));
+      }
+      this.render();
+    };
+  },
+  leave() { const m = C(); m.onchange = m.ondragover = m.ondrop = null; },
+};
+
+// The builder's AI bar needs the AI settings; fetched once.
+api("/api/ai").then((ai) => (B.ai = ai)).catch(() => (B.ai = null));
+wire();

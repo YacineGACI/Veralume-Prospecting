@@ -66,19 +66,6 @@ def test_call_outcome_and_pipeline(db):
     assert client.post(f"/api/leads/{lid}/call", json={"outcome": "maybe"}).status_code == 422
 
 
-def test_campaign_prepare_approve(db):
-    _lead(db)
-    tpl = client.get("/api/templates").json()["items"]
-    ag = next(t for t in tpl if t["key"] == "ag_first")
-    c = client.post("/api/campaigns", json={"name": "Agences", "kind": "agency",
-                                            "template_id": ag["id"], "daily_cap": 5}).json()  # fmt: skip
-    assert c["stats"]["matching"] == 1
-    w = client.post(f"/api/campaigns/{c['id']}/prepare", json={}).json()
-    assert w["written"] == 1
-    ready = client.get("/api/today?segment=agency").json()["ready"]
-    assert len(ready) == 1
-    a = client.post("/api/messages/approve", json={"ids": [ready[0]["message"]["id"]]}).json()
-    assert a["approved"] == 1
 
 
 def test_dnc_cancels_pending(db):

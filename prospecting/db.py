@@ -214,6 +214,7 @@ class Template(Base):
     # Images from the library sent with every email of this template (before/after examples).
     asset_ids: Mapped[list[int] | None] = mapped_column(JSON, default=list)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    campaign_id: Mapped[int | None] = mapped_column(Integer, index=True)  # a campaign's version
     updated_at: Mapped[str] = mapped_column(String(32), default=now, onupdate=now)
 
 
@@ -228,6 +229,7 @@ class Asset(Base):
     size: Mapped[int] = mapped_column(Integer, default=0)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[str] = mapped_column(String(32), default=now)
+    dossier_id: Mapped[int | None] = mapped_column(Integer, index=True)
 
 
 class LeadFile(Base):
@@ -248,19 +250,57 @@ class LeadFile(Base):
 
 
 class Campaign(Base):
-    """A segment, a first-email template, follow-ups and a daily cap."""
+    """Who to write to (a segment, filters, how many, in what order), the email versions
+    they get (templates with this campaign_id; two or more make an A/B test), and how it
+    goes out (a daily cap, a start day, reviewed each morning or approved once)."""
 
     __tablename__ = "campaigns"
 
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(160))
     kind: Mapped[str] = mapped_column(String(32))
-    # Filters: {"dep": "67", "min_lean": 3, "measured": true}
+    # {"deps": ["67"], "max_km": 40, "first_name": true, "small": true, "lean_min": 1,
+    #  "website": true, "score_min": 60}
     filters: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
-    template_id: Mapped[int | None] = mapped_column(Integer)
+    template_id: Mapped[int | None] = mapped_column(Integer)  # older campaigns: one template
     followups: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     daily_cap: Mapped[int] = mapped_column(Integer, default=20)
-    status: Mapped[str] = mapped_column(String(12), default="draft")  # draft running paused
+    status: Mapped[str] = mapped_column(String(12), default="draft")  # draft running paused done
+    created_at: Mapped[str] = mapped_column(String(32), default=now)
+    size: Mapped[int | None] = mapped_column(Integer)  # how many leads to contact
+    lead_order: Mapped[str | None] = mapped_column(String(12))  # small | score | random
+    excluded: Mapped[list[int] | None] = mapped_column(JSON, default=list)  # unticked leads
+    review: Mapped[str | None] = mapped_column(String(8))  # daily (you approve) | auto
+    metric: Mapped[str | None] = mapped_column(String(12))  # reply | interested
+    start_on: Mapped[str | None] = mapped_column(String(10))  # YYYY-MM-DD
+    followups_on: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    started_at: Mapped[str | None] = mapped_column(String(32))
+    ended_at: Mapped[str | None] = mapped_column(String(32))
+    experiment_id: Mapped[int | None] = mapped_column(Integer)
+
+
+class CampaignLead(Base):
+    """A lead in a started campaign, in sending order, with the version it gets."""
+
+    __tablename__ = "campaign_leads"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    campaign_id: Mapped[int] = mapped_column(Integer, index=True)
+    lead_id: Mapped[int] = mapped_column(Integer, index=True)
+    template_id: Mapped[int | None] = mapped_column(Integer)
+    rank: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[str] = mapped_column(String(32), default=now)
+
+
+class Dossier(Base):
+    """A named set of images sent again and again (before/after examples)."""
+
+    __tablename__ = "dossiers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(120))
+    note: Mapped[str] = mapped_column(String(300), default="")
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[str] = mapped_column(String(32), default=now)
 
 
@@ -307,6 +347,7 @@ class Experiment(Base):
     winner_id: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[str] = mapped_column(String(32), default=now)
     ended_at: Mapped[str | None] = mapped_column(String(32))
+    campaign_id: Mapped[int | None] = mapped_column(Integer)  # a campaign's own test
 
 
 class Setting(Base):

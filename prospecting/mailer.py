@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from prospecting import pilot
 from prospecting.config import settings
 from prospecting.contacts import shared_contacts, usable_emails
-from prospecting.db import Activity, Lead, Message, Photo, Setting, Template, now
+from prospecting.db import Activity, Campaign, Lead, Message, Photo, Setting, Template, now
 from prospecting.text import host
 
 TZ = ZoneInfo(settings.timezone)
@@ -192,7 +192,8 @@ def pick_template(s: Session, lead: Lead, step: int = 0) -> Template | None:
         if t is not None and not t.archived and t.step == 0 and fits_lead(t, lead):
             return t
     rows = list(
-        s.scalars(select(Template).where(Template.step == step, Template.archived.is_(False))
+        s.scalars(select(Template).where(Template.step == step, Template.archived.is_(False),
+                                  Template.campaign_id.is_(None))
                   .order_by(Template.id))
     )
     rows = [t for t in rows if t.key != "after_voicemail"]
@@ -340,6 +341,9 @@ def send(s: Session, msg: Message, followups: bool = True) -> Message:
     """Send one outbound message now (within the daily cap) and record what follows.
     The caller commits."""
     lead = s.get(Lead, msg.lead_id)
+    if followups and msg.campaign_id:  # a campaign can go without follow-ups
+        camp = s.get(Campaign, msg.campaign_id)
+        followups = not (camp and camp.followups_on is False)
     if lead is None or lead.do_not_contact:
         msg.status, msg.error = "cancelled", "do not contact"
         raise MailError("This lead asked not to be contacted.")

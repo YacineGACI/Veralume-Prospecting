@@ -53,13 +53,14 @@ def assets(archived: bool = False) -> dict[str, Any]:
 
 
 @router.post("/assets")
-async def add_asset(request: Request, name: str) -> dict[str, Any]:
+async def add_asset(request: Request, name: str, dossier_id: int | None = None) -> dict[str, Any]:
     data = await _body(request)
     with session() as s:
         try:
             a = pilot.add_asset(s, name, data)
         except pilot.FileError as e:
             raise HTTPException(422, str(e)) from e
+        a.dossier_id = dossier_id
         s.commit()
         return pilot.asset_dict(a)
 
@@ -67,6 +68,7 @@ async def add_asset(request: Request, name: str) -> dict[str, Any]:
 class AssetPatch(BaseModel):
     name: str | None = None
     archived: bool | None = None
+    dossier_id: int | None = None
 
 
 @router.patch("/assets/{asset_id}")
@@ -79,6 +81,8 @@ def edit_asset(asset_id: int, p: AssetPatch) -> dict[str, Any]:
             a.name = p.name.strip()[:160]
         if p.archived is not None:
             a.archived = p.archived
+        if p.dossier_id is not None:
+            a.dossier_id = p.dossier_id
         s.commit()
         return pilot.asset_dict(a)
 

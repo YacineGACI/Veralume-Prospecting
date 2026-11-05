@@ -39,7 +39,8 @@ DRAWS = 20_000
 
 def running_for(s: Session, kind: str) -> Experiment | None:
     return s.scalars(
-        select(Experiment).where(Experiment.kind == kind, Experiment.status == "running")
+        select(Experiment).where(Experiment.kind == kind, Experiment.status == "running",
+                               Experiment.campaign_id.is_(None))
     ).first()
 
 

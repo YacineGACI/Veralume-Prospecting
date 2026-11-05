@@ -10,13 +10,12 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from prospecting import experiments, mailer
+from prospecting import mailer
 from prospecting.contacts import flags, mark, shared_contacts, usable_emails, usable_phones
 from prospecting.db import (
     CALL_OUTCOMES,
     STATUSES,
     Activity,
-    Campaign,
     Lead,
     Message,
     Photo,
@@ -313,107 +312,6 @@ def log_call(
 
 
 # --- campaigns -----------------------------------------------------------------------
-
-
-def campaign_query(c: Campaign):
-    f = c.filters or {}
-    q = select(Lead).where(Lead.kind == c.kind, Lead.do_not_contact.is_(False))
-    if f.get("dep"):
-        q = q.where(Lead.postcode.startswith(str(f["dep"])))
-    if f.get("min_lean") not in (None, ""):
-        q = q.where(Lead.lean_median >= float(f["min_lean"]))
-    if f.get("measured"):
-        q = q.where(Lead.lean_median.is_not(None))
-    if f.get("min_score"):
-        q = q.where(Lead.score >= int(f["min_score"]))
-    return q
-
-
-def campaign_leads(s: Session, c: Campaign) -> list[Lead]:
-    se, _ = shared_contacts()
-    rows = s.scalars(campaign_query(c).order_by(Lead.score.desc()))
-    return [lead for lead in rows if usable_emails(lead, se)]
-
-
-def prepare(s: Session, c: Campaign, n: int | None = None) -> int:
-    """Write the campaign's next first emails; they wait for review in Today.
-    Without `n`, writes up to the daily cap minus what was already written today."""
-    t = s.get(Template, c.template_id) if c.template_id else None
-    if n is None:
-        today = s.scalar(
-            select(func.count(Message.id)).where(
-                Message.campaign_id == c.id, Message.step == 0,
-                Message.created_at >= iso(day_start()),
-            )
-        ) or 0  # fmt: skip
-        n = max(0, c.daily_cap - today)
-    if n <= 0:
-        return 0
-    started = set(
-        s.scalars(select(Message.lead_id).where(Message.direction == "out", Message.step == 0))
-    )
-    leads = [
-        lead for lead in campaign_leads(s, c)
-        if lead.status == "new" and lead.id not in started and not lead.last_contacted_at
-        and (not lead.snoozed_until or lead.snoozed_until <= now())
-    ]  # fmt: skip
-    leads.sort(key=lambda l: (not (SMALL_NEW & set(l.tags or [])), -l.score))
-    made = 0
-    for lead in leads[:n]:
-        # A campaign with a fixed first email stays out of A/B tests.
-        tpl, exp = (t, None) if t else experiments.choose_first(s, lead)
-        if tpl is None:
-            break
-        d = mailer.draft(s, lead, tpl)
-        mailer.new_outbound(s, lead, subject=d["subject"], body=d["body"], template_id=tpl.id,
-                            campaign_id=c.id, attach_photo_id=d["attach_photo_id"], asset_ids=d["asset_ids"],
-                            experiment_id=exp.id if exp else None)  # fmt: skip
-        lead.campaign_id = c.id
-        made += 1
-    return made
-
-
-def prepare_running(s: Session) -> int:
-    """Once a working day, write each running campaign's batch for review."""
-    if not mailer.in_window():
-        return 0
-    today = local().date().isoformat()
-    n = 0
-    for c in s.scalars(select(Campaign).where(Campaign.status == "running")):
-        key = f"prepared:{c.id}"
-        if mailer.get_setting(s, key, None) != today:
-            n += prepare(s, c)
-            mailer.set_setting(s, key, today)
-    return n
-
-
-def campaign_stats(s: Session, c: Campaign) -> dict[str, Any]:
-    msgs = list(s.scalars(select(Message).where(Message.campaign_id == c.id)))
-    sent = [m for m in msgs if m.direction == "out" and m.status == "sent"]
-    emailed = {m.lead_id for m in sent if m.step == 0}
-    replied = (
-        set(s.scalars(select(Message.lead_id).where(Message.direction == "in",
-                                                    Message.lead_id.in_(emailed))))
-        if emailed else set()
-    )  # fmt: skip
-    steps: dict[int, dict[str, Any]] = {}
-    for m in sent:
-        st = steps.setdefault(m.step, {"sent": 0, "replies": 0, "templates": Counter()})
-        st["sent"] += 1
-        st["templates"][m.template_id] += 1
-    for lid in replied:  # a reply counts for the last step sent to that lead
-        last = max((m for m in sent if m.lead_id == lid), key=lambda m: m.sent_at or "")
-        steps[last.step]["replies"] += 1
-    names = {t.id: t.name for t in s.scalars(select(Template))}
-    return {
-        "matching": len(campaign_leads(s, c)), "emailed": len(emailed), "replied": len(replied),
-        "waiting": sum(1 for m in msgs if m.status in ("queued", "approved")),
-        "steps": [
-            {"step": k, "sent": v["sent"], "replies": v["replies"],
-             "template": names.get(v["templates"].most_common(1)[0][0], "Written by hand")}
-            for k, v in sorted(steps.items())
-        ],
-    }  # fmt: skip
 
 
 # --- insights ------------------------------------------------------------------------
