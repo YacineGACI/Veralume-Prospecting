@@ -62,9 +62,16 @@ export const labelChip = (x, extra = "") => `<span class="lab c-${esc(x.color)}"
 export const labelChips = (l) => (l.labels || []).map((id) => LABELS.byId[id]).filter(Boolean).map((x) => labelChip(x)).join("");
 
 /** Countries, in the order we prospect them; "CA" leads are all in Quebec. */
-export const COUNTRY = { FR: "France", BE: "Belgium", LU: "Luxembourg", CH: "Switzerland", DE: "Germany", CA: "Quebec" };
+export const COUNTRY = {
+  FR: "France", BE: "Belgium", LU: "Luxembourg", CH: "Switzerland", DE: "Germany", CA: "Quebec",
+  AT: "Austria", NL: "Netherlands", IT: "Italy", ES: "Spain", PT: "Portugal", GB: "United Kingdom", IE: "Ireland",
+  MC: "Monaco", SE: "Sweden", DK: "Denmark", NO: "Norway", FI: "Finland", PL: "Poland", CZ: "Czechia",
+};
 /** The language to write to a lead in. */
-export const LANG = { fr: "French", de: "German", nl: "Dutch", it: "Italian", en: "English" };
+export const LANG = {
+  fr: "French", de: "German", nl: "Dutch", it: "Italian", en: "English", es: "Spanish", pt: "Portuguese",
+  sv: "Swedish", da: "Danish", no: "Norwegian", fi: "Finnish", pl: "Polish", cs: "Czech",
+};
 /** A small drawn flag (emoji flags don't show on Windows). */
 export const flag = (c) => { c = c || "FR"; return `<span class="cflag cf-${esc(c)}" role="img" aria-label="${esc(COUNTRY[c] || c)}" title="${esc(COUNTRY[c] || c)}"></span>`; };
 

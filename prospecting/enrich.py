@@ -62,23 +62,28 @@ _TAGS = {
     "prestige": r"\bprestige\b|\bluxe\b|biens d.exception",
     "commercial": r"immobilier d.entreprise|locaux commerciaux|fonds de commerce|bureaux a louer",
     "virtual_tour": r"visite virtuelle|matterport|visite 360|virtuelle?r? (rundgang|tour)|"
-    r"virtuele tour|360.?(grad|rundgang)|tour virtuel|visita virtuale",
-    "drone": r"\bdrone\b|\bdrohne|\bdrohnen|luftaufnahme",
+    r"virtuele tour|360.?(grad|rundgang)|tour virtuel|visita virtuale|visita virtual|"
+    r"tour virtual|virtual tour|wirtualny spacer|virtuell visning",
+    "drone": r"\bdrone\b|\bdrohne|\bdrohnen|luftaufnahme|\bdron\b|\bdroni\b|\bdrona\b",
     "home_staging": r"home staging",
     "pro_photos": r"photographe professionnel|photos? professionnelles?|reportage photo|"
     r"professionelle fotos|professionele foto",
     # French, German, Italian (immobili…), Dutch, English.
-    "real_estate": r"immobili|vastgoed|real estate|makelaar",
+    "real_estate": r"immobili|vastgoed|real estate|makelaar|inmobiliari|imobiliari|"
+    r"property photograph|estate agent|lettings|maklarfoto|fastighetsfoto|boligfoto|"
+    r"ejendomsfoto|eiendomsfoto|asuntokuva|kiinteistokuva|nieruchomosci|nemovitost",
 }
 
 _PAGE_KEYS = [
-    (r"contact|coordonnees|nous-trouver|kontakt|contatt", 5),
-    (r"mentions-legales|mentions_legales|legal|mentions|impressum|colofon", 5),
+    (r"contact|coordonnees|nous-trouver|kontakt|contatt|contacto|contato|yhteys", 5),
+    (r"mentions-legales|mentions_legales|legal|mentions|impressum|colofon|aviso-legal|"
+     r"note-legali", 5),
     (r"equipe|a-propos|qui-sommes|notre-agence|l-agence|about|presentation|ueber-mich|"
-     r"uber-mich|ueber-uns|uber-uns|over-mij|over-ons|chi-siamo", 3),  # fmt: skip
+     r"uber-mich|ueber-uns|uber-uns|over-mij|over-ons|chi-siamo|chi-sono|sobre|quem-somos|om-oss|"
+     r"om-mig|meista|o-mnie|o-nas", 3),  # fmt: skip
     (
         r"vente|acheter|achat|nos-biens|biens|annonces|catalogue|proprietes|portfolio|realisations|"
-        r"galerie|referenzen|projekte|immobilien",
+        r"galerie|referenzen|projekte|immobilien|galleria|galeria|trabajos|lavori",
         4,
     ),
 ]

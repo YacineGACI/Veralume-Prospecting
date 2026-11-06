@@ -841,3 +841,17 @@ pre.env{font:12.5px var(--mono);background:var(--bg);border:1px solid var(--line
 .idc.ctry{gap:5px}
 .langsel{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);margin-left:6px}
 .langsel select{font:inherit;padding:1px 4px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--text)}
+.cf-AT{background:linear-gradient(#c8102e 33.4%,#fff 0 66.6%,#c8102e 0)}
+.cf-NL{background:linear-gradient(#ae1c28 33.4%,#fff 0 66.6%,#21468b 0)}
+.cf-IT{background:linear-gradient(90deg,#009246 33.4%,#fff 0 66.6%,#ce2b37 0)}
+.cf-ES{background:linear-gradient(#aa151b 25%,#f1bf00 0 75%,#aa151b 0)}
+.cf-PT{background:linear-gradient(90deg,#046a38 40%,#da291c 0)}
+.cf-IE{background:linear-gradient(90deg,#169b62 33.4%,#fff 0 66.6%,#ff883e 0)}
+.cf-MC{background:linear-gradient(#ce1126 50%,#fff 0)}
+.cf-PL{background:linear-gradient(#fff 50%,#dc143c 0)}
+.cf-CZ{background:linear-gradient(to bottom right,#11457e 50%,transparent 50%) left top/50% 50% no-repeat,linear-gradient(to top right,#11457e 50%,transparent 50%) left bottom/50% 50% no-repeat,linear-gradient(#fff 50%,#d7141a 0)}
+.cf-GB{background:linear-gradient(#c8102e,#c8102e) center/100% 20% no-repeat,linear-gradient(#c8102e,#c8102e) center/16% 100% no-repeat,linear-gradient(#fff,#fff) center/100% 36% no-repeat,linear-gradient(#fff,#fff) center/28% 100% no-repeat,#012169}
+.cf-SE{background:linear-gradient(#fecc02,#fecc02) 0 50%/100% 26% no-repeat,linear-gradient(#fecc02,#fecc02) 34% 0/22% 100% no-repeat,#006aa7}
+.cf-DK{background:linear-gradient(#fff,#fff) 0 50%/100% 26% no-repeat,linear-gradient(#fff,#fff) 34% 0/22% 100% no-repeat,#c8102e}
+.cf-FI{background:linear-gradient(#002f6c,#002f6c) 0 50%/100% 26% no-repeat,linear-gradient(#002f6c,#002f6c) 34% 0/22% 100% no-repeat,#fff}
+.cf-NO{background:linear-gradient(#00205b,#00205b) 0 50%/100% 12% no-repeat,linear-gradient(#00205b,#00205b) 36% 0/10% 100% no-repeat,linear-gradient(#fff,#fff) 0 50%/100% 26% no-repeat,linear-gradient(#fff,#fff) 34% 0/22% 100% no-repeat,#ba0c2f}

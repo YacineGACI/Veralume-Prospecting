@@ -152,13 +152,16 @@ def abroad(
         typer.Option("--country", "-c", help="BE, LU, CH, DE or CA (Quebec); all by default"),
     ] = None,
     search: Annotated[bool, typer.Option(help="Also run the slow DuckDuckGo search")] = True,
+    europe: Annotated[
+        bool, typer.Option(help="The rest of Europe (Austria, the Netherlands, Italy…)")
+    ] = False,
 ) -> None:
     """Real-estate photographers in Belgium, Luxembourg, Switzerland, Germany and Quebec:
     OpenStreetMap, then a search in each country's languages, then their websites. Each
     lead keeps its country. Rerun to continue after a search captcha."""
-    from prospecting.countries import FOREIGN
+    from prospecting.countries import EUROPE, FOREIGN
 
-    codes = [c.upper() for c in country] if country else FOREIGN
+    codes = [c.upper() for c in country] if country else EUROPE if europe else FOREIGN
     if bad := [c for c in codes if c not in FOREIGN]:
         raise typer.BadParameter(f"unknown country {bad}; use {', '.join(FOREIGN)}")
     for code in codes:

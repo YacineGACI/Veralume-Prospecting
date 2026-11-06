@@ -37,20 +37,31 @@ from prospecting.text import (
 )
 
 UNCONFIRMED = "check_real_estate"  # an OSM photographer whose site we haven't read yet
-_PHOTO = re.compile(r"photo|foto|fotograf")
-_REAL_ESTATE = re.compile(r"immo|vastgoed|real estate|makelaar|immeubl|architect|architekt")
+_PHOTO = re.compile(r"photo|foto|fotograf|valokuv|kuvaaja")
+# In ASCII (accents dropped): French, German, Dutch, Italian, Spanish, Portuguese, English,
+# Swedish, Danish, Norwegian, Finnish, Polish, Czech.
+_REAL_ESTATE = re.compile(
+    r"immo|vastgoed|real estate|makelaar|immeubl|architect|architekt|inmobiliari|imobili|"
+    r"property|estate agent|maklar|fastighet|bolig|ejendom|eiendom|asunto|kiinteist|"
+    r"nieruchomo|nemovitost"
+)
 # Words of the search itself: a result title made of them says nothing about who it is.
 _GENERIC = re.compile(
     r"photographe|photographie|immobili|vastgoed|fotograf|fotografo|startseite|accueil|home\b|"
-    r"willkommen|bienvenue|welkom|^\W*$"
+    r"willkommen|bienvenue|welkom|^\W*$|photographer|photography|inmobiliari|imobili|"
+    r"property|estate agent|maklar|fastighet|bolig|ejendom|eiendom|asuntokuva|kiinteist|"
+    r"nieruchomo|nemovitost|valokuva|inicio|benvenut|welcome"
 )
 # Country-code domains we don't prospect (Austria, Italy, the Netherlands, UK…).
-_OURS = {".fr", ".be", ".lu", ".ch", ".de", ".ca"}
+_OURS = {"." + t.rsplit(".", 1)[-1] for c in COUNTRIES.values() for t in c.tlds}
 # City and regional domains.
 _CITY_TLDS = {".berlin": "DE", ".hamburg": "DE", ".koeln": "DE", ".bayern": "DE",
               ".nrw": "DE", ".saarland": "DE", ".ruhr": "DE", ".brussels": "BE",
               ".vlaanderen": "BE", ".gent": "BE", ".swiss": "CH", ".zuerich": "CH",
-              ".quebec": "CA"}  # fmt: skip
+              ".quebec": "CA", ".wien": "AT", ".tirol": "AT", ".amsterdam": "NL",
+              ".frl": "NL", ".london": "GB", ".scot": "GB", ".wales": "GB", ".cymru": "GB",
+              ".madrid": "ES", ".barcelona": "ES", ".eus": "ES", ".gal": "ES",
+              ".stockholm": "SE", ".helsinki": "FI", ".koeln": "DE"}  # fmt: skip
 
 
 def _site_country(url: str, searched: str) -> str | None:

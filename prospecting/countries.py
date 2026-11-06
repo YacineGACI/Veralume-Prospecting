@@ -29,6 +29,19 @@ def _towns(term: str, towns: str) -> list[str]:
     return [f"{term} {t.strip()}" for t in towns.split(",")]
 
 
+def _area(code: str) -> str:
+    return f'"ISO3166-1"="{code}"][admin_level=2'
+
+
+# Any alphabet's capital, for Polish, Czech or Nordic towns (Łódź, Ørsted, Århus).
+_TOWN_U = r"(?P<town>[^\W\d_](?:[^\W\d_]|['’.\- ]){1,40})"
+
+
+def _pc_town(pc: str) -> re.Pattern[str]:
+    """'postcode Town' where the postcode matches `pc`."""
+    return re.compile(r"\b(?P<pc>" + pc + r")[\s,]+" + _TOWN_U)
+
+
 _TOWN = r"(?P<town>[A-ZÀ-ÝÄÖÜ][A-Za-zÀ-ÿÄÖÜäöüß'’.\- ]{1,40})"
 
 COUNTRIES: dict[str, Country] = {
@@ -104,9 +117,87 @@ COUNTRIES: dict[str, Country] = {
                 r"(?P<pc>[A-Z]\d[A-Z]\s?\d[A-Z]\d)\b"
             ),
         ),
+        # --- the rest of Europe (2026-11-06) ---
+        Country("AT", "Autriche", (".at",), _area("AT"), [
+            ("at-de", ["Immobilienfotograf Österreich", "Immobilienfotografie Österreich"]
+             + _towns("Immobilienfotograf", "Wien, Graz, Linz, Salzburg, Innsbruck, Klagenfurt, "
+                      "Villach, Wels, St. Pölten, Dornbirn, Bregenz, Wiener Neustadt, Kitzbühel"))],
+            _pc_town(r"(?:A-?\s?)?\d{4}")),
+        Country("NL", "Pays-Bas", (".nl",), _area("NL"), [
+            ("nl-nl", ["vastgoedfotograaf Nederland", "vastgoedfotografie makelaar"]
+             + _towns("vastgoedfotograaf", "Amsterdam, Rotterdam, Den Haag, Utrecht, Eindhoven, "
+                      "Groningen, Tilburg, Almere, Breda, Nijmegen, Haarlem, Arnhem, Amersfoort, "
+                      "Maastricht, Zwolle, Leiden"))],
+            _pc_town(r"\d{4}\s?[A-Z]{2}")),
+        Country("IT", "Italie", (".it",), _area("IT"), [
+            ("it-it", ["fotografo immobiliare", "fotografia immobiliare agenzie"]
+             + _towns("fotografo immobiliare", "Milano, Roma, Torino, Napoli, Bologna, Firenze, "
+                      "Genova, Verona, Venezia, Padova, Bari, Palermo, Brescia, Bergamo, Como, "
+                      "Trieste, Cagliari, Catania, Pisa, Rimini, Bolzano"))],
+            _pc_town(r"\d{5}")),
+        Country("ES", "Espagne", (".es", ".cat"), _area("ES"), [
+            ("es-es", ["fotógrafo inmobiliario", "fotografía inmobiliaria"]
+             + _towns("fotógrafo inmobiliario", "Madrid, Barcelona, Valencia, Sevilla, Málaga, "
+                      "Marbella, Alicante, Palma de Mallorca, Bilbao, Zaragoza, Murcia, Ibiza, "
+                      "Las Palmas, Tenerife, San Sebastián, Granada, Valladolid"))],
+            _pc_town(r"\d{5}")),
+        Country("PT", "Portugal", (".pt",), _area("PT"), [
+            ("pt-pt", ["fotógrafo imobiliário", "fotografia imobiliária"]
+             + _towns("fotógrafo imobiliário", "Lisboa, Porto, Faro, Braga, Coimbra, Cascais, "
+                      "Funchal, Aveiro, Setúbal, Albufeira, Lagos"))],
+            _pc_town(r"\d{4}-\d{3}")),
+        Country("GB", "Royaume-Uni", (".uk",), _area("GB"), [
+            ("uk-en", ["property photographer UK", "estate agent photographer",
+                       "real estate photographer UK"]
+             + _towns("property photographer", "London, Manchester, Birmingham, Leeds, Bristol, "
+                      "Edinburgh, Glasgow, Liverpool, Sheffield, Newcastle, Nottingham, Cardiff, "
+                      "Brighton, Oxford, Cambridge, Bath, Southampton, Belfast, Leicester, York"))],
+            # 'Bristol BS1 4DJ': town first, then the postcode.
+            re.compile(r"(?P<town>[A-Z][A-Za-z'’\- ]{1,30}?)[\s,]+"
+                       r"(?P<pc>[A-Z]{1,2}\d[A-Z\d]?\s?\d[A-Z]{2})\b")),
+        Country("IE", "Irlande", (".ie",), _area("IE"), [
+            ("ie-en", ["property photographer Ireland", "property photography Ireland"]
+             + _towns("property photographer", "Dublin, Cork, Galway, Limerick, Waterford, "
+                      "Kilkenny, Wexford, Sligo"))]),
+        Country("MC", "Monaco", (".mc",), _area("MC"), [
+            ("fr-fr", ["photographe immobilier Monaco", "photographe immobilier Monte-Carlo"])],
+            _pc_town(r"980\d{2}")),
+        Country("SE", "Suède", (".se",), _area("SE"), [
+            ("se-sv", ["mäklarfotograf", "fastighetsfotograf Sverige"]
+             + _towns("fastighetsfotograf", "Stockholm, Göteborg, Malmö, Uppsala, Västerås, "
+                      "Örebro, Linköping, Helsingborg, Norrköping, Lund, Umeå"))],
+            _pc_town(r"\d{3}\s?\d{2}")),
+        Country("DK", "Danemark", (".dk",), _area("DK"), [
+            ("dk-da", ["boligfotograf Danmark", "ejendomsfotograf"]
+             + _towns("boligfotograf", "København, Aarhus, Odense, Aalborg, Esbjerg, Randers, "
+                      "Kolding, Horsens, Vejle, Roskilde"))],
+            _pc_town(r"(?:DK-?\s?)?\d{4}")),
+        Country("NO", "Norvège", (".no",), _area("NO"), [
+            ("no-no", ["boligfotograf Norge", "eiendomsfotograf"]
+             + _towns("boligfotograf", "Oslo, Bergen, Trondheim, Stavanger, Kristiansand, "
+                      "Drammen, Fredrikstad, Tromsø, Sandnes"))],
+            _pc_town(r"\d{4}")),
+        Country("FI", "Finlande", (".fi",), _area("FI"), [
+            ("fi-fi", ["asuntokuvaaja", "kiinteistökuvaaja"]
+             + _towns("asuntokuvaaja", "Helsinki, Espoo, Tampere, Vantaa, Oulu, Turku, "
+                      "Jyväskylä, Lahti, Kuopio"))],
+            _pc_town(r"\d{5}")),
+        Country("PL", "Pologne", (".pl",), _area("PL"), [
+            ("pl-pl", ["fotograf nieruchomości", "fotografia nieruchomości"]
+             + _towns("fotograf nieruchomości", "Warszawa, Kraków, Wrocław, Łódź, Poznań, Gdańsk, "
+                      "Szczecin, Bydgoszcz, Lublin, Katowice, Gdynia, Sopot"))],
+            _pc_town(r"\d{2}-\d{3}")),
+        Country("CZ", "Tchéquie", (".cz",), _area("CZ"), [
+            ("cz-cs", ["fotograf nemovitostí", "fotografie nemovitostí"]
+             + _towns("fotograf nemovitostí", "Praha, Brno, Ostrava, Plzeň, Liberec, Olomouc, "
+                      "České Budějovice, Hradec Králové"))],
+            _pc_town(r"\d{3}\s?\d{2}")),
     ]
 }  # fmt: skip
 FOREIGN = [c for c in COUNTRIES if c != "FR"]
+# The countries done first; `prospect abroad --europe` does the others.
+FIRST_WAVE = ["BE", "LU", "CH", "DE", "CA"]
+EUROPE = [c for c in FOREIGN if c not in FIRST_WAVE]
 
 
 def country_of_url(url: str | None) -> str | None:
@@ -121,7 +212,9 @@ def country_of_url(url: str | None) -> str | None:
 
 
 _PREFIXES = (("+352", "LU"), ("+32", "BE"), ("+41", "CH"), ("+49", "DE"), ("+1", "CA"),
-             ("+33", "FR"))  # fmt: skip
+             ("+33", "FR"), ("+43", "AT"), ("+31", "NL"), ("+39", "IT"), ("+34", "ES"),
+             ("+351", "PT"), ("+44", "GB"), ("+353", "IE"), ("+377", "MC"), ("+46", "SE"),
+             ("+45", "DK"), ("+47", "NO"), ("+358", "FI"), ("+48", "PL"), ("+420", "CZ"))  # fmt: skip
 
 
 def country_of_phone(number: str) -> str | None:

@@ -72,7 +72,8 @@ def test_foreign_phones_are_written_internationally():
 def test_a_site_says_its_country_and_france_and_others_are_left_out():
     assert _site_country("https://studio-licht.de/", "CH") == "DE"
     assert _site_country("https://studio.photo/", "BE") == "BE"
-    assert _site_country("https://foto.at/", "DE") is None
+    assert _site_country("https://foto.at/", "DE") == "AT"
+    assert _site_country("https://foto.hu/", "AT") is None  # Hungary: not prospected
     assert _site_country("https://studio.fr/", "BE") is None  # France is collected separately
     assert _site_country("https://studio.qc.ca/", "CA") == "CA"
     assert _site_country("https://licht.berlin/", "DE") == "DE"
@@ -134,3 +135,17 @@ def test_an_absurd_photo_address_is_a_failed_download_not_a_crash():
     f = Fetcher()
     assert f.get_bytes("https://example.com/" + "a" * 70_000) is None
     assert f.get("https://example.com/" + "a" * 70_000) is None
+
+
+def test_the_rest_of_europe():
+    from prospecting.countries import EUROPE
+    from prospecting.languages import from_html_lang, from_region
+
+    assert {"AT", "NL", "IT", "ES", "PT", "GB", "IE", "PL"} <= set(EUROPE)
+    assert from_region("NL", "1012 AB") == "nl" and from_region("PL", "00-001") == "pl"
+    assert from_html_lang("en-GB", "GB") == "en" and from_html_lang("nb-NO", "NO") == "no"
+    assert from_html_lang("ca", "ES") == "es"  # Catalan site: a Spanish email reaches them
+    assert find_phones("Tel. 0612345678", "NL") == ["+31 6 12345678"]
+    assert find_phones("07911 123456", "GB") == ["+44 7911 123456"]
+    assert _site_country("https://fotostudio.pl/", "CZ") == "PL"
+    assert _name("Fotograf nieruchomości Kraków | Jan Nowak Studio", "https://x.pl") == "Jan Nowak Studio"

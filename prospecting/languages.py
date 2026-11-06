@@ -17,8 +17,13 @@ from sqlalchemy import or_, select
 
 from prospecting.db import Lead, session
 
-LANGUAGES = {"fr": "French", "de": "German", "nl": "Dutch", "it": "Italian", "en": "English"}
-_DEFAULT = {"FR": "fr", "BE": "fr", "LU": "fr", "CH": "de", "DE": "de", "CA": "fr"}
+LANGUAGES = {"fr": "French", "de": "German", "nl": "Dutch", "it": "Italian", "en": "English",
+             "es": "Spanish", "pt": "Portuguese", "sv": "Swedish", "da": "Danish",
+             "no": "Norwegian", "fi": "Finnish", "pl": "Polish", "cs": "Czech"}  # fmt: skip
+_DEFAULT = {"FR": "fr", "BE": "fr", "LU": "fr", "CH": "de", "DE": "de", "CA": "fr",
+            "AT": "de", "NL": "nl", "IT": "it", "ES": "es", "PT": "pt", "GB": "en", "IE": "en",
+            "MC": "fr", "SE": "sv", "DK": "da", "NO": "no", "FI": "fi", "PL": "pl", "CZ": "cs"}  # fmt: skip
+_ALIASES = {"nb": "no", "nn": "no", "ca": "es", "eu": "es", "gl": "es"}  # Bokmål, Catalan…
 # Words of the searches that found the lead, by language.
 _SEARCH_WORDS = [("nl", r"vastgoed"), ("de", r"immobilienfoto|luxemburg\b"), ("it", r"fotografo"),
                  ("fr", r"photographe|photographie")]  # fmt: skip
@@ -57,12 +62,14 @@ def from_region(country: str | None, postcode: str | None, found_by: str | None 
 
 
 def from_html_lang(value: str | None, country: str | None) -> str | None:
-    """'de-CH' → 'de'. English counts only in Quebec: elsewhere an English site is
-    usually a translation, and the owner reads the local language."""
+    """'de-CH' → 'de'. English counts only in Quebec, the UK and Ireland: elsewhere an
+    English site is usually a translation, and the owner reads the local language.
+    Catalan, Basque and Galician sites count as Spanish (a Spanish email reaches them)."""
     code = (value or "").strip().lower()[:2]
+    code = _ALIASES.get(code, code)
     if code not in LANGUAGES:
         return None
-    if code == "en" and (country or "FR") != "CA":
+    if code == "en" and (country or "FR") not in ("CA", "GB", "IE"):
         return None
     return code
 
