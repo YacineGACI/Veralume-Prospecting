@@ -61,13 +61,20 @@ export async function loadLabels() {
 export const labelChip = (x, extra = "") => `<span class="lab c-${esc(x.color)}"${extra}><i></i>${esc(x.name)}</span>`;
 export const labelChips = (l) => (l.labels || []).map((id) => LABELS.byId[id]).filter(Boolean).map((x) => labelChip(x)).join("");
 
+/** Countries, in the order we prospect them; "CA" leads are all in Quebec. */
+export const COUNTRY = { FR: "France", BE: "Belgium", LU: "Luxembourg", CH: "Switzerland", DE: "Germany", CA: "Quebec" };
+/** A small drawn flag (emoji flags don't show on Windows). */
+export const flag = (c) => { c = c || "FR"; return `<span class="cflag cf-${esc(c)}" role="img" aria-label="${esc(COUNTRY[c] || c)}" title="${esc(COUNTRY[c] || c)}"></span>`; };
+
 /** What a lead is, as small chips: facts in grey (network, size, how new), then what they
  * do in colour, at most `max` of those (rarest first). */
 export function idChips(l, { max = 2, facts = true } = {}) {
   const id = l.id_ || {};
+  const c = l.country || id.country;
+  const where = c && c !== "FR" ? [`<span class="idc ctry">${flag(c)} ${esc(COUNTRY[c] || c)}</span>`] : [];
   const f = facts ? (id.facts || []).map((x) => `<span class="idc ${x.k === "network" ? "net" : x.k === "new" ? "new" : ""}">${esc(x.t)}</span>`) : [];
   const sp = (id.specialties || []).slice(0, max).map((x) => `<span class="idc sp sp-${esc(x.tag)}">${esc(x.t)}</span>`);
-  return [...f, ...sp].join("");
+  return [...where, ...f, ...sp].join("");
 }
 /** Create or edit one of the user's tags: a name and a colour. */
 export function labelEditor(lab, onDone) {

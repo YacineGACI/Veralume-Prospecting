@@ -21,6 +21,7 @@ from prospecting.api.pilot import router as pilot_router
 from prospecting.api.outreach import router as outreach_router
 from prospecting.api.writer import router as writer_router
 from prospecting.config import settings
+from prospecting.countries import COUNTRIES
 from prospecting.contacts import (
     email_problem,
     flags,
@@ -117,12 +118,17 @@ def meta() -> dict[str, Any]:
     deps: set[str] = set()
     with session() as s:
         rows = s.execute(
-            select(Lead.kind, Lead.emails, Lead.phones, Lead.do_not_contact, Lead.postcode)
+            select(Lead.kind, Lead.emails, Lead.phones, Lead.do_not_contact, Lead.postcode,
+                   Lead.country)
         )
-        for kind, emails, phones, dnc, pc in rows:
+        by_country: dict[str, dict[str, int]] = {}
+        for kind, emails, phones, dnc, pc, country in rows:
             k = by_kind.setdefault(kind, {"total": 0, "email": 0, "phone": 0})
             k["total"] += 1
-            if pc:
+            country = country or "FR"
+            bc = by_country.setdefault(country, {})
+            bc[kind] = bc.get(kind, 0) + 1
+            if pc and country == "FR":
                 deps.add(pc[:2])
             if dnc:
                 continue
@@ -135,7 +141,8 @@ def meta() -> dict[str, Any]:
         "kinds": KINDS, "statuses": STATUSES, "activity_kinds": ACTIVITY_KINDS,
         "by_kind": by_kind, "by_status": {st: by_status.get(st, 0) for st in (*STATUSES, "lost")},
         "total": sum(v["total"] for v in by_kind.values()), "departements": sorted(deps),
-        "center": settings.center_name,
+        "center": settings.center_name, "by_country": by_country,
+        "countries": {c.code: c.name for c in COUNTRIES.values()},
     }  # fmt: skip
 
 
@@ -154,6 +161,7 @@ def leads(
     q: str = "", kind: str = "", status: str = "", city: str = "", dep: str = "",
     reach: str = "", contacted: str = "", measured: bool = False, min_lean: float | None = None,
     needs_check: bool = False, small_first: bool = False, hide_dnc: bool = True, label: int | None = None,
+    country: str = "",
     sort: str = "score", offset: int = 0, limit: int = 100,
 ) -> dict[str, Any]:  # fmt: skip
     shared = shared_contacts()
@@ -173,8 +181,10 @@ def leads(
             stmt = stmt.where(Lead.status == status)
         if city:
             stmt = stmt.where(Lead.city == city)
+        if country:
+            stmt = stmt.where(func.coalesce(Lead.country, "FR") == country)
         if dep:
-            stmt = stmt.where(Lead.postcode.startswith(dep))
+            stmt = stmt.where(func.coalesce(Lead.country, "FR") == "FR", Lead.postcode.startswith(dep))
         if measured:
             stmt = stmt.where(Lead.lean_median.is_not(None))
         if min_lean is not None:
@@ -232,6 +242,8 @@ def _apply(s, l: Lead, patch: LeadPatch) -> None:
         l.status = patch.status
         if patch.status == "pilot" and not l.pilot_stage:  # it shows on the pilots board
             pilot.set_stage(s, l, "interested")
+        elif patch.status in ("new", "shortlisted", "contacted", "replied", "interview") and l.pilot_stage:
+            pilot.set_stage(s, l, None)  # moved back before the pilot: it leaves the pilots board
         if patch.status in ("lost", "customer", "replied", "interview", "pilot"):
             mailer.cancel_pending(s, l.id, f"moved to {patch.status}")
     if patch.kind and patch.kind in KINDS:

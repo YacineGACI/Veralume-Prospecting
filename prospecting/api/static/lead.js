@@ -2,7 +2,7 @@
 // our retouched versions, the pilot's steps, notes), the email composer, and the review
 // dialog for written emails.
 import {
-  $, aiBar, api, at, av, busy, changed, closeModal, confetti, esc, fail, host, I, idChips, KIND, LABELS, labelChip, labelEditor, leanTxt, loadLabels,
+  $, aiBar, api, at, av, busy, changed, closeModal, confetti, COUNTRY, esc, fail, flag, host, I, idChips, KIND, LABELS, labelChip, labelEditor, leanTxt, loadLabels,
   lightbox, openModal, pill, safeUrl, small, SMALL_NEW, STAGES, STATUS, STEP, store, telHref,
   toast, toLocalInput, fromLocalInput, tomorrowAt, when, wireAiBar,
 } from "./core.js";
@@ -265,7 +265,7 @@ function renderLead() {
   const tab = (k, label, n, key) => `<button role="tab" aria-selected="${drawer.tab === k}" data-tab="${k}" title="Key ${key}">${label}${n ? ` <span class="n">${n}</span>` : ""}</button>`;
   D().innerHTML = `<div class="dr-h">
     <div class="row">${av(l, "lg")}<div style="flex:1;min-width:0"><h3>${esc(who(l))}</h3>
-      <div class="meta">${l.person ? `${esc(l.name)} · ` : ""}${esc(KIND[l.kind] || l.kind)} · ${esc(l.city || "town unknown")}${l.dep ? ` <span class="tag">${esc(l.dep)}</span>` : ""}${l.id_?.dep_name ? ` ${esc(l.id_.dep_name)}` : ""}${l.distance_km != null ? ` · ${Math.round(l.distance_km)} km` : ""} ${pill(l.status)} ${l.do_not_contact ? `<span class="flag">do not contact</span>` : ""}</div>
+      <div class="meta">${l.person ? `${esc(l.name)} · ` : ""}${esc(KIND[l.kind] || l.kind)} · ${flag(l.country)} ${esc(l.city || "town unknown")}${l.country && l.country !== "FR" ? `, ${esc(COUNTRY[l.country] || l.country)}` : ""}${l.dep ? ` <span class="tag">${esc(l.dep)}</span>` : ""}${l.id_?.dep_name ? ` ${esc(l.id_.dep_name)}` : ""}${l.distance_km != null ? ` · ${Math.round(l.distance_km)} km` : ""} ${pill(l.status)} ${l.do_not_contact ? `<span class="flag">do not contact</span>` : ""}</div>
       <div class="idrow">${(l.labels || []).map((id) => LABELS.byId[id]).filter(Boolean).map((x) => `<button class="lab c-${esc(x.color)}" data-lab-off="${x.id}" aria-label="Remove the tag ${esc(x.name)}"><i></i>${esc(x.name)} ×</button>`).join("")}<button class="chip" data-lab-add style="padding:0 9px;font-size:12px">+ tag</button>
         ${idChips(l, { max: 99 })}${sn ? ` ${sn}` : ""}</div>
       <div class="labmenu" data-lab-menu hidden></div></div>
@@ -591,7 +591,11 @@ export async function openComposer(leadId, templateId = null, { fileIds = null }
 
 // --- review a written email (follow-up, campaign batch, after a voicemail) --------------
 
-export async function openReview(messageId, item = null) {
+/** Read a written email before it goes. `manual` (you send each email yourself): the main
+ * button sends it now and `next` opens the following one, so a morning's batch is a
+ * series of "read, Send". Otherwise you can also approve it for the scheduled sending. */
+export async function openReview(messageId, item = null, { manual = null, next = null, left = 0 } = {}) {
+  if (manual === null) manual = (await api("/api/settings").catch(() => ({}))).send_mode !== "scheduled";
   let m = item?.message, l = item?.lead;
   if (!m || !l) {
     l = drawer.lead ? await api(`/api/leads/${drawer.lead.id}`).catch(() => null) : null;
@@ -611,7 +615,8 @@ export async function openReview(messageId, item = null) {
       <textarea class="input mailbody" id="rv-body" aria-label="Message" lang="fr" autofocus>${esc(m.body)}</textarea>
       ${atts.length ? `<div class="rv-atts"><span class="small muted">${atts.length} attachment${atts.length > 1 ? "s" : ""}</span>${atts.join("")}</div>` : ""}
       <div class="row"><button class="btn ghost danger" data-cancel-msg>Don't send</button><button class="btn ghost" data-open-lead>Open lead file</button><span class="grow"></span>
-        <button class="btn" data-approve>Approve</button><button class="btn primary" data-send-now>${small(I.send, 15)} Send now</button></div>
+        ${next && left ? `<button class="btn ghost" data-skip-next>Later</button>` : ""}
+        ${manual ? "" : `<button class="btn" data-approve>Approve</button>`}<button class="btn primary" data-send-now>${small(I.send, 15)} Send${next && left ? ` and next <span class="small" style="opacity:.8">(${left} left)</span>` : manual ? "" : " now"} <kbd>Ctrl ↵</kbd></button></div>
     </div>`, { narrow: true });
   const save = () => api(`/api/messages/${m.id}`, { method: "PATCH", body: { to: sheet.querySelector("#rv-to").value, subject: sheet.querySelector("#rv-subject").value, body: sheet.querySelector("#rv-body").value } });
   sheet.onclick = async (e) => {
@@ -620,6 +625,8 @@ export async function openReview(messageId, item = null) {
     const d = t.dataset;
     if (d.close !== undefined) return closeModal();
     if (d.openLead !== undefined) { closeModal(); return openLead(l.id); }
+    if (d.skipNext !== undefined) { closeModal(); return next(); }
+    let sent = false;
     await busy(t, async () => {
       if (d.cancelMsg !== undefined) {
         await api(`/api/messages/${m.id}`, { method: "DELETE" });
@@ -633,9 +640,11 @@ export async function openReview(messageId, item = null) {
         await api(`/api/messages/${m.id}/send`, { method: "POST" });
         toast(`Sent to ${who(l)}`);
       }
+      sent = true;
       closeModal();
       changed();
       if (drawer.lead?.id === l.id) await reload();
     });
+    if (sent && next && left && (d.sendNow !== undefined || d.cancelMsg !== undefined)) next();
   };
 }

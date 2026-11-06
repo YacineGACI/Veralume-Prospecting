@@ -71,6 +71,8 @@ class Lead(Base):
     founded: Mapped[str | None] = mapped_column(String(10))
     network: Mapped[str | None] = mapped_column(String(80))
 
+    # ISO code (FR, BE, LU, CH, DE; CA is Quebec). See countries.py.
+    country: Mapped[str | None] = mapped_column(String(2), default="FR", index=True)
     address: Mapped[str | None] = mapped_column(String(300))
     postcode: Mapped[str | None] = mapped_column(String(10))
     city: Mapped[str | None] = mapped_column(String(120), index=True)
@@ -398,6 +400,9 @@ def _migrate() -> None:
                 if col.name not in have:
                     ddl = col.type.compile(engine.dialect)
                     c.exec_driver_sql(f"ALTER TABLE {table.name} ADD COLUMN {col.name} {ddl}")
+                    if (table.name, col.name) == ("leads", "country"):
+                        # Leads before 2026-11-06 all came from French sources.
+                        c.exec_driver_sql("UPDATE leads SET country = 'FR'")
 
 
 _migrate()

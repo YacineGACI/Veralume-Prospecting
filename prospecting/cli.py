@@ -10,6 +10,7 @@ from sqlalchemy import func, select
 from prospecting import enrich, scoring, screen
 from prospecting.areas import RINGS
 from prospecting.db import Lead, SearchQuery, session
+from prospecting.sources import abroad as abroad_src
 from prospecting.sources import business, directory, osm, photographers, registre
 from prospecting.sources.search import already_ran
 
@@ -139,6 +140,67 @@ def photographers_cmd(
     if sweep:
         directory.sweep(on_batch=_process_new_photographers)
     _photographer_stats()
+
+
+@app.command()
+def abroad(
+    country: Annotated[
+        list[str] | None,
+        typer.Option("--country", "-c", help="BE, LU, CH, DE or CA (Quebec); all by default"),
+    ] = None,
+    search: Annotated[bool, typer.Option(help="Also run the slow DuckDuckGo search")] = True,
+) -> None:
+    """Real-estate photographers in Belgium, Luxembourg, Switzerland, Germany and Quebec:
+    OpenStreetMap, then a search in each country's languages, then their websites. Each
+    lead keeps its country. Rerun to continue after a search captcha."""
+    from prospecting.countries import FOREIGN
+
+    codes = [c.upper() for c in country] if country else FOREIGN
+    if bad := [c for c in codes if c not in FOREIGN]:
+        raise typer.BadParameter(f"unknown country {bad}; use {', '.join(FOREIGN)}")
+    for code in codes:
+        abroad_src.collect_osm(code)
+    _read_then_prune()
+    if search:
+        for code in codes:
+            _, finished = abroad_src.collect_search(code)
+            _read_then_prune()
+            if not finished:
+                typer.echo("DuckDuckGo wants a captcha: rerun `prospect abroad` in an hour or two")
+                break
+    _country_stats()
+
+
+def _read_then_prune() -> None:
+    """Read the new sites first and drop the non-real-estate OSM studios, so their
+    photos are never downloaded and measured."""
+    with session() as s:
+        ids = list(
+            s.scalars(
+                select(Lead.id).where(Lead.kind == "photographer", Lead.enrich_status.is_(None))
+            )
+        )
+    if ids:
+        enrich.run(lead_ids=ids)
+    abroad_src.prune()
+    _process_new_photographers()
+
+
+def _country_stats() -> None:
+    with session() as s:
+        rows = s.execute(
+            select(Lead.country, Lead.emails, Lead.phones, Lead.tags, Lead.do_not_contact).where(
+                Lead.kind == "photographer"
+            )
+        ).all()
+    by: dict[str, list[int]] = {}
+    for c, emails, phones, tags, dnc in rows:
+        d = by.setdefault(c or "?", [0, 0, 0])
+        d[0] += 1
+        d[1] += "real_estate" in (tags or [])
+        d[2] += bool((emails or phones) and not dnc)
+    for c, (n, re_, reach) in sorted(by.items(), key=lambda kv: -kv[1][0]):
+        typer.echo(f"photographers {c}: {n}, real-estate confirmed {re_}, reachable {reach}")
 
 
 def _process_new_photographers() -> None:

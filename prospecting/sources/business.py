@@ -53,7 +53,7 @@ def _find(client: httpx.Client, name: str, dep: str | None) -> dict | None:
 def run(lead_ids: list[int] | None = None, progress: Callable[[str], None] = print) -> int:
     """Look up photographers not checked yet. Returns how many were matched."""
     with session() as s:
-        q = select(Lead).where(Lead.kind == "photographer")
+        q = select(Lead).where(Lead.kind == "photographer", Lead.country == "FR")  # French register
         if lead_ids:
             q = q.where(Lead.id.in_(lead_ids))
         todo = [

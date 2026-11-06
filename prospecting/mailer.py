@@ -53,6 +53,16 @@ def get_setting(s: Session, key: str, default: Any) -> Any:
     return default if row is None else row.value
 
 
+SEND_MODES = ("manual", "scheduled")
+
+
+def send_mode(s: Session) -> str:
+    """"manual": every written email waits until you press Send on it (the default, to
+    start). "scheduled": you approve them and the worker sends them through the day."""
+    mode = get_setting(s, "send_mode", "manual")
+    return mode if mode in SEND_MODES else "manual"
+
+
 def set_setting(s: Session, key: str, value: Any) -> None:
     row = s.get(Setting, key)
     if row is None:

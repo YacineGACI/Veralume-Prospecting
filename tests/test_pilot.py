@@ -184,3 +184,18 @@ def test_gmail_wrapped_quote_header_is_cut():
          "a écrit :\n> Bonjour")
     assert inbox.new_text(t) == "Okay, je participe"
     assert inbox.new_text("Le mieux est lundi.\nMerci") == "Le mieux est lundi.\nMerci"
+
+
+def test_moving_a_lead_back_before_the_pilot_takes_it_off_the_pilots_board(db):
+    with db() as s:
+        lead = Lead(kind="photographer", name="Studio Retour", status="new", emails=[], phones=[], people=[],
+                    tags=[], sources=[], score=50, do_not_contact=False)  # fmt: skip
+        s.add(lead)
+        s.commit()
+        lid = lead.id
+    for st in ("contacted", "replied", "interview", "pilot"):
+        assert client.patch(f"/api/leads/{lid}", json={"status": st}).status_code == 200
+    assert client.get(f"/api/leads/{lid}").json()["pilot_stage"] == "interested"
+    client.patch(f"/api/leads/{lid}", json={"status": "new"})
+    back = client.get(f"/api/leads/{lid}").json()
+    assert back["status"] == "new" and back["pilot_stage"] is None

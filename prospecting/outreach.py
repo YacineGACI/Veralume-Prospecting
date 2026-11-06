@@ -75,10 +75,12 @@ def identity(lead: Lead, se: set[str]) -> dict[str, Any]:
         facts.append({"t": "New business", "k": "new"})
     elif "recent_profile" in tags:
         facts.append({"t": "New profile", "k": "plain"})
-    _, name = departement(lead.postcode)
+    country = lead.country or "FR"
+    _, name = departement(lead.postcode) if country == "FR" else (None, None)
     emails = usable_emails(lead, se)
     return {
         "dep_name": name,
+        "country": country,
         "facts": facts,
         "specialties": [{"tag": t, "t": SPECIALTY_LABEL[t]} for t in SPECIALTY_ORDER if t in tags],
         "personal_email": any(email_is_personal(e) for e in emails),
@@ -90,7 +92,8 @@ def summary(lead: Lead, shared: tuple[set[str], set[str]] | None = None) -> dict
     se, sp = shared or shared_contacts()
     return {
         "id": lead.id, "name": lead.name, "person": person(lead), "kind": lead.kind,
-        "network": lead.network, "city": lead.city, "dep": (lead.postcode or "")[:2] or None,
+        "network": lead.network, "city": lead.city, "country": lead.country or "FR",
+        "dep": ((lead.postcode or "")[:2] or None) if (lead.country or "FR") == "FR" else None,
         "distance_km": lead.distance_km, "website": lead.website,
         "emails": len(lead.emails or []), "phones": len(lead.phones or []),
         "email_ok": bool(usable_emails(lead, se)), "phone_ok": bool(usable_phones(lead, sp)),

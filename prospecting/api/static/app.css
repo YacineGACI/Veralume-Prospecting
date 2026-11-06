@@ -829,3 +829,13 @@ pre.env{font:12.5px var(--mono);background:var(--bg);border:1px solid var(--line
 .cr-low h2{font-weight:600}
 .dep-more{border:1px dashed var(--line2);border-radius:20px;padding:5px 10px;background:var(--raise);font-size:13px;color:var(--text2)}
 .cr-days .b{max-width:44px}
+
+/* Country flags, drawn (emoji flags don't render on Windows). */
+.cflag{display:inline-block;flex:none;width:16px;height:11px;border-radius:2px;vertical-align:-1px;box-shadow:0 0 0 1px rgb(0 0 0 / .18)}
+.cf-FR{background:linear-gradient(90deg,#0055a4 33.4%,#fff 0 66.6%,#ef4135 0)}
+.cf-BE{background:linear-gradient(90deg,#000 33.4%,#fdda24 0 66.6%,#ef3340 0)}
+.cf-DE{background:linear-gradient(#000 33.4%,#dd0000 0 66.6%,#ffce00 0)}
+.cf-LU{background:linear-gradient(#ef3340 33.4%,#fff 0 66.6%,#00a3e0 0)}
+.cf-CH{width:11px;background:linear-gradient(#fff,#fff) center/62% 22% no-repeat,linear-gradient(#fff,#fff) center/22% 62% no-repeat,#da291c}
+.cf-CA{background:linear-gradient(#fff,#fff) center/100% 18% no-repeat,linear-gradient(#fff,#fff) 44% 50%/12% 100% no-repeat,#003da5}
+.idc.ctry{gap:5px}

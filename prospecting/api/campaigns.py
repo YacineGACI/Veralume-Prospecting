@@ -104,7 +104,7 @@ def audience(b: AudienceIn) -> dict[str, Any]:
         hand, blocked = C.hand_picked(s, b.included, b.campaign_id)
         chosen = C.pick(every, hand, b.size, b.excluded)
         gone = set(b.excluded)
-        n_dep = Counter((l.postcode or "")[:2] for l in every if l.postcode)
+        n_dep = Counter((l.postcode or "")[:2] for l in every if l.postcode and (l.country or "FR") == "FR")
         deps = [{"dep": d, "n": n} for d, n in sorted(n_dep.items(), key=lambda x: (-x[1], x[0]))]
         hand_ids = {l.id for l in hand}
         return {

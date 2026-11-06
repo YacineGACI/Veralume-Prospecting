@@ -94,6 +94,7 @@ def today(segment: str | None = None) -> dict[str, Any]:
             ],
             "ready": [{"lead": summary(leads[m.lead_id], shared), "message": _msg(m)}
                       for m in ready if m.lead_id in leads],
+            "send_mode": mailer.send_mode(s),
             "actions": [summary(l, shared) for l in actions],
             "fresh": [summary(l, shared) for l in fresh],
             "opener": outreach.opener(s),
@@ -259,8 +260,11 @@ class IdsIn(BaseModel):
 @router.post("/messages/approve")
 def approve(b: IdsIn) -> dict[str, Any]:
     """Approve written emails: the worker sends them one by one, spaced out, inside the
-    sending window and the daily cap."""
+    sending window and the daily cap. Only in "scheduled" mode: in "manual" mode you send
+    each one yourself."""
     with session() as s:
+        if mailer.send_mode(s) == "manual":
+            raise HTTPException(409, "You send emails yourself (Settings › Sending): open each one and press Send.")
         n = 0
         q = select(Message).where(Message.id.in_(b.ids), Message.status == "queued")
         for m in s.scalars(q):
@@ -493,6 +497,7 @@ def get_settings() -> dict[str, Any]:
             "segment": mailer.get_setting(s, "segment", "photographer"),
             "signature": mailer.get_setting(s, "signature", mailer.DEFAULT_SIGNATURE),
             "followups": mailer.get_setting(s, "followups", mailer.DEFAULT_FOLLOWUPS),
+            "send_mode": mailer.send_mode(s),
             "mailbox": mailbox_status(s),
             "from_name": settings.mail_from_name,
         }
@@ -503,6 +508,7 @@ class SettingsIn(BaseModel):
     segment: str | None = None
     signature: str | None = None
     followups: list[dict[str, Any]] | None = None
+    send_mode: str | None = None
 
 
 @router.put("/settings")
@@ -511,6 +517,8 @@ def put_settings(b: SettingsIn) -> dict[str, Any]:
         for k, v in b.model_dump(exclude_none=True).items():
             if k == "segment" and v not in KINDS:
                 raise HTTPException(422, "Unknown segment")
+            if k == "send_mode" and v not in mailer.SEND_MODES:
+                raise HTTPException(422, "send_mode is manual or scheduled")
             mailer.set_setting(s, k, v)
         s.commit()
     return get_settings()

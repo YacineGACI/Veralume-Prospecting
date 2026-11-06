@@ -107,6 +107,7 @@ def test_start_deals_versions_evenly_and_writes_the_daily_batch(db):
 
 def test_auto_review_approves_and_a_future_start_waits(db):
     leads(db, 3)
+    client.put("/api/settings", json={"send_mode": "scheduled"})  # approval only exists in this mode
     c = draft(size=3, review="auto", start_on=(date.today() + timedelta(days=3)).isoformat())
     two_versions(c["id"])
     client.post(f"/api/campaigns/{c['id']}/start")
@@ -342,3 +343,23 @@ def test_identity_says_who_a_lead_is(db):
     assert [x["t"] for x in ia["specialties"]] == ["Luxury", "Rentals"]  # rarest first
     ib = client.get(f"/api/leads/{b}").json()["id_"]
     assert [x["t"] for x in ib["facts"]] == ["Laforêt", "3–5 staff"] and ib["dep_name"] == "Bas-Rhin"
+
+
+def test_manual_mode_is_the_default_and_nothing_goes_out_on_its_own(db):
+    leads(db, 2)
+    assert client.get("/api/settings").json()["send_mode"] == "manual"
+    c = draft(size=2, review="auto")
+    two_versions(c["id"])
+    client.post(f"/api/campaigns/{c['id']}/start")
+    with db() as s:
+        C.prepare(s, s.get(Campaign, c["id"]))
+        s.commit()
+        msgs = list(s.scalars(select(Message).where(Message.campaign_id == c["id"])))
+    assert msgs and {m.status for m in msgs} == {"queued"}  # even "approved once" waits for you
+    today = client.get("/api/today").json()
+    assert today["send_mode"] == "manual" and len(today["ready"]) == 2
+    r = client.post("/api/messages/approve", json={"ids": [m.id for m in msgs]})
+    assert r.status_code == 409
+    sent = client.post(f"/api/messages/{msgs[0].id}/send").json()
+    assert sent["status"] == "sent"  # dry-run mailbox: written to the outbox
+    assert client.put("/api/settings", json={"send_mode": "sometimes"}).status_code == 422

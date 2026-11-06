@@ -57,12 +57,12 @@ class DuckDuckGo:
             timeout=20, headers={"User-Agent": settings.user_agent}, follow_redirects=True
         )
 
-    def search(self, query: str) -> list[Result]:
+    def search(self, query: str, region: str = "fr-fr") -> list[Result]:
         wait = settings.search_interval_s - (time.monotonic() - DuckDuckGo._last)
         if wait > 0:
             time.sleep(wait)
         DuckDuckGo._last = time.monotonic()
-        r = self.client.post("https://html.duckduckgo.com/html/", data={"q": query, "kl": "fr-fr"})
+        r = self.client.post("https://html.duckduckgo.com/html/", data={"q": query, "kl": region})
         if r.status_code in (202, 403, 429) or "anomaly" in r.text[:20000]:
             raise SearchBlocked("DuckDuckGo asks for a captcha; try again in an hour or two")
         r.raise_for_status()

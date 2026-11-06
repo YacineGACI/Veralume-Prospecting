@@ -66,6 +66,15 @@ NOT_OWN_SITE = {
     "tripadvisor.fr", "mappy.com", "justacote.com", "118712.fr", "hoodspot.fr",
     "cylex-france.fr", "infobel.com", "123pages.fr", "lesbonsprofessionnels.com",
     "opinionsystem.fr", "immodvisor.com", "avis-verifies.com", "wix.com",
+    # Abroad: portals and directories.
+    "immoweb.be", "zimmo.be", "immovlan.be", "goudengids.be", "pagesdor.be",
+    "athome.lu", "immotop.lu", "editus.lu", "homegate.ch", "immoscout24.ch", "comparis.ch",
+    "local.ch", "search.ch", "immobilienscout24.de", "immowelt.de", "gelbeseiten.de",
+    "dasoertliche.de", "11880.com", "golocal.de", "werkenntdenbesten.de", "fotografen.de",
+    "centris.ca", "duproprio.com", "realtor.ca", "pagesjaunes.ca", "yellowpages.ca",
+    "kijiji.ca", "yelp.com", "yelp.ca", "yelp.de", "yelp.be", "yelp.ch", "tripadvisor.com",
+    "fiverr.com", "upwork.com", "behance.net", "bark.com", "houzz.com", "houzz.de",
+    "wikipedia.de", "trustlocal.be", "provenexpert.com", "jameda.de", "booking.com",
 }  # fmt: skip
 
 SOCIAL = {"facebook.com": "facebook", "instagram.com": "instagram", "linkedin.com": "linkedin"}
@@ -141,14 +150,32 @@ _PHONE_RE = re.compile(
 )
 
 
-def find_phones(text: str) -> list[str]:
-    """French numbers as '03 88 12 34 56', in order of appearance, deduplicated."""
+def find_phones(text: str, country: str | None = "FR") -> list[str]:
+    """French numbers as '03 88 12 34 56'; elsewhere the international form
+    ('+32 471 12 34 56'), in order of appearance, deduplicated."""
+    if country and country != "FR":
+        return _foreign_phones(text, country)
     out: list[str] = []
     for m in _PHONE_RE.finditer(text):
         digits = "0" + re.sub(r"\D", "", m.group(1))
         if len(digits) != 10:
             continue
         pretty = " ".join(digits[i : i + 2] for i in range(0, 10, 2))
+        if pretty not in out:
+            out.append(pretty)
+    return out
+
+
+def _foreign_phones(text: str, country: str) -> list[str]:
+    import phonenumbers as pn
+
+    out: list[str] = []
+    try:
+        matches = list(pn.PhoneNumberMatcher(text[:200_000], country, leniency=pn.Leniency.VALID))
+    except Exception:  # odd text must never stop a site's reading
+        return out
+    for m in matches:
+        pretty = pn.format_number(m.number, pn.PhoneNumberFormat.INTERNATIONAL)
         if pretty not in out:
             out.append(pretty)
     return out
@@ -179,6 +206,11 @@ FREE_MAIL = {
     "gmail.com", "orange.fr", "wanadoo.fr", "free.fr", "hotmail.com", "hotmail.fr",
     "outlook.com", "outlook.fr", "live.fr", "yahoo.fr", "yahoo.com", "laposte.net",
     "sfr.fr", "neuf.fr", "icloud.com", "aol.com", "bbox.fr", "numericable.fr",
+    "gmx.de", "gmx.net", "gmx.ch", "web.de", "t-online.de", "outlook.de", "hotmail.de",
+    "yahoo.de", "googlemail.com", "freenet.de", "bluewin.ch", "hispeed.ch", "sunrise.ch",
+    "skynet.be", "telenet.be", "proximus.be", "hotmail.be", "live.be", "pt.lu",
+    "videotron.ca", "hotmail.ca", "yahoo.ca", "sympatico.ca", "live.ca", "me.com", "proton.me",
+    "protonmail.com",
 }  # fmt: skip
 
 

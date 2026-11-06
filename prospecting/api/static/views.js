@@ -1,7 +1,7 @@
 // The views. Each one renders into the canvas and may handle its own keys.
 import {
   $, $$, aiBar, api, at, av, busy, changed, closeModal, confetti, dayName, esc, fail, firstName, I,
-  idChips, kindIcon, KINDS_PL, LABELS, labelChip, labelChips, labelEditor, leanChip, leanCol, leanTxt, loadLabels, manageLabels, openModal, pill, ring, scoreCls, small, SMALL_NEW, STAGES, STATUS,
+  COUNTRY, flag, idChips, kindIcon, KINDS_PL, LABELS, labelChip, labelChips, labelEditor, leanChip, leanCol, leanTxt, loadLabels, manageLabels, openModal, pill, ring, scoreCls, small, SMALL_NEW, STAGES, STATUS,
   STEP, store, telHref, toast, toLocalInput, fromLocalInput, tomorrowAt, when, wireAiBar,
 } from "./core.js";
 import { callLead, openComposer, openLead, openReview } from "./lead.js";
@@ -32,7 +32,7 @@ export const today = {
     const t = await api(`/api/today${seg ? `?segment=${seg}` : ""}`);
     ui.badge = t.replies.length + t.ready.length + t.actions.length;
     const g = t.goals, d = t.done, mb = t.mailbox;
-    const nR = t.replies.length, nW = t.ready.length;
+    const nR = t.replies.length, nW = t.ready.length, manual = t.send_mode !== "scheduled";
     const head = nR ? `${dayName()}. <em>${nR} ${nR > 1 ? "replies are" : "reply is"}</em> waiting for you.`
       : nW ? `${dayName()}. <em>${nW} ${nW > 1 ? "emails are" : "email is"}</em> written, ready for you.`
       : d.email + d.call === 0 ? `${dayName()}. Let's find your first <em>pilot customers</em>.`
@@ -60,8 +60,11 @@ export const today = {
             <div class="card-h"><h2>Up next</h2><span class="grow"></span><span class="small dim"><kbd>j</kbd> <kbd>k</kbd> move · <kbd>Enter</kbd> open · <kbd>e</kbd> email</span></div>
             ${nR ? `<div class="queue-group"><div class="qg-h"><b>Replies</b> ${nR}<span class="grow"></span><span>answer them today</span></div>
               ${t.replies.map((r) => q(r.lead, `<span class="snip">“${esc(r.message.snippet)}”</span> · ${esc(when(r.message.at))}`, `<button class="btn sm primary" data-email="${r.lead.id}">Reply</button>`)).join("")}</div>` : ""}
-            ${nW ? `<div class="queue-group"><div class="qg-h"><b>Written, ready for your review</b> ${nW}<span class="grow"></span><button class="btn sm primary" data-approve-all>${small(I.check)} Approve all ${nW}</button></div>
-              ${t.ready.map((r, i) => q(r.lead, `${esc(STEP[r.message.step] || "Email")} · ${esc(r.message.subject)}`, `<button class="btn sm" data-review="${i}">Review</button>`)).join("")}</div>` : ""}
+            ${nW ? (manual
+              ? `<div class="queue-group"><div class="qg-h"><b>Written, ready to send</b> ${nW}<span class="grow"></span><button class="btn sm primary" data-review="0">${small(I.send)} Send them one by one</button></div>
+                ${t.ready.map((r, i) => q(r.lead, `${esc(STEP[r.message.step] || "Email")} · ${esc(r.message.subject)}`, `<button class="btn sm" data-review="${i}">Read and send</button>`)).join("")}</div>`
+              : `<div class="queue-group"><div class="qg-h"><b>Written, ready for your review</b> ${nW}<span class="grow"></span><button class="btn sm primary" data-approve-all>${small(I.check)} Approve all ${nW}</button></div>
+                ${t.ready.map((r, i) => q(r.lead, `${esc(STEP[r.message.step] || "Email")} · ${esc(r.message.subject)}`, `<button class="btn sm" data-review="${i}">Review</button>`)).join("")}</div>`) : ""}
             ${t.actions.length ? `<div class="queue-group"><div class="qg-h"><b>Call-backs and reminders</b> ${t.actions.length}<span class="grow"></span>${t.actions.some((a) => a.next_action === "call") ? `<a class="btn sm" href="#call">${small(I.tel)} Start call mode</a>` : ""}</div>
               ${t.actions.map((l) => q(l, `${small(I.clock, 12)} ${l.next_action === "call" ? "Call them" : esc(l.next_action)} · ${esc(at(l.next_action_at))}`, l.next_action === "call" ? `<button class="btn sm" data-call="${l.id}">Call</button>` : `<button class="btn sm" data-done="${l.id}">${small(I.check)} Done</button>`)).join("")}</div>` : ""}
             <div class="queue-group"><div class="qg-h"><b>Fresh leads</b> · ${esc(KINDS_PL[t.segment].toLowerCase())} not contacted yet, new and small first<span class="grow"></span><span>${Math.max(g.email - d.email, 0)} emails left for today's goal</span></div>
@@ -88,7 +91,11 @@ export const today = {
       if (dd.seg) { store.set("segment", dd.seg); api("/api/settings", { method: "PUT", body: { segment: dd.seg } }).catch(() => {}); return this.render(); }
       if (dd.email) return openComposer(+dd.email);
       if (dd.call) return callLead(+dd.call);
-      if (dd.review !== undefined) return openReview(null, t.ready[+dd.review]);
+      if (dd.review !== undefined) {
+        // One after the other: sending (or skipping) one opens the next.
+        const from = (i) => i < t.ready.length && openReview(null, t.ready[i], { manual, next: () => from(i + 1), left: t.ready.length - i - 1 });
+        return from(+dd.review);
+      }
       if (dd.approveAll !== undefined) return busy(b, async () => {
         const r = await api("/api/messages/approve", { method: "POST", body: { ids: t.ready.map((x) => x.message.id) } });
         toast(!r.mailbox.configured ? `${r.approved} approved. They go out once your mailbox is connected.` : `${r.approved} approved. They go out ${r.mailbox.in_window ? "over the next minutes, spaced out" : "from 9:00 on the next working day"}.`);
@@ -126,7 +133,8 @@ export const leads = {
     if (q.measured) p.set("measured", "true");
     if (q.min_lean) p.set("min_lean", "3");
     if (q.needs_check) p.set("needs_check", "true");
-    if (q.dep) p.set("dep", q.dep);
+    if (q.country) p.set("country", q.country);
+    if (q.dep && (!q.country || q.country === "FR")) p.set("dep", q.dep);
     if (q.label) p.set("label", q.label);
     return p;
   },
@@ -159,7 +167,8 @@ export const leads = {
         ${chip("not", "Not contacted", q.contacted === "no")}${chip("yes", "Contacted", q.contacted === "yes")}
         ${chip("small_first", "New or small first", q.small_first)}${chip("measured", "Photos measured", q.measured)}${chip("min_lean", "Lean ≥ 3°", q.min_lean)}${chip("needs_check", "Contact to fix", q.needs_check)}
         <span class="grow"></span>
-        <select class="select" id="ldep" aria-label="Département" style="padding:4px 8px"><option value="">All départements</option>${m.departements.map((d) => `<option ${d === q.dep ? "selected" : ""}>${esc(d)}</option>`).join("")}</select>
+        <select class="select" id="lcountry" aria-label="Country" style="padding:4px 8px"><option value="">All countries</option>${Object.keys(COUNTRY).filter((c) => m.by_country?.[c]?.[q.kind]).map((c) => `<option value="${c}" ${c === q.country ? "selected" : ""}>${esc(COUNTRY[c])} · ${m.by_country[c][q.kind].toLocaleString("en")}</option>`).join("")}</select>
+        ${!q.country || q.country === "FR" ? `<select class="select" id="ldep" aria-label="Département" style="padding:4px 8px"><option value="">All départements</option>${m.departements.map((d) => `<option ${d === q.dep ? "selected" : ""}>${esc(d)}</option>`).join("")}</select>` : ""}
         <select class="select" id="lsort" aria-label="Sort" style="padding:4px 8px">${[["score", "Best score"], ["lean", "Most lean"], ["distance", "Nearest to Strasbourg"], ["contacted", "Last contacted"], ["updated", "Recently changed"], ["name", "Name"]].map(([v, t]) => `<option value="${v}" ${v === q.sort ? "selected" : ""}>${t}</option>`).join("")}</select>
       </div>
       <div class="tablewrap"><table><thead><tr><th style="width:34px"><input type="checkbox" class="chk" id="selall" aria-label="Select all shown"></th><th>Score</th><th>Lead</th><th>Town</th><th>Reach</th><th>Lean</th><th>Stage</th><th>Contacted</th></tr></thead>
@@ -170,7 +179,8 @@ export const leads = {
     this.bulk();
     let timer;
     $("#lq").oninput = (e) => { clearTimeout(timer); timer = setTimeout(() => { this.qs.q = e.target.value.trim(); this.render().then(() => { const i = $("#lq"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
-    $("#ldep").onchange = (e) => { this.qs.dep = e.target.value; this.render(); };
+    $("#lcountry").onchange = (e) => { this.qs.country = e.target.value; if (this.qs.country && this.qs.country !== "FR") this.qs.dep = ""; this.render(); };
+    if ($("#ldep")) $("#ldep").onchange = (e) => { this.qs.dep = e.target.value; this.render(); };
     $("#lsort").onchange = (e) => { this.qs.sort = e.target.value; this.render(); };
     $("#selall").onchange = (e) => { this.items.forEach((l) => (e.target.checked ? this.sel.add(l.id) : this.sel.delete(l.id))); this.draw(); };
     C().onclick = (e) => this.click(e);
@@ -183,7 +193,7 @@ export const leads = {
       <td><span class="score ${scoreCls(l.score)}">${l.score}</span></td>
       <td class="who"><div class="row" style="gap:12px;flex-wrap:nowrap;align-items:flex-start">${av(l)}<div style="min-width:0"><b>${esc(l.person || l.name)}</b>${l.person ? `<span class="bn">${esc(l.name)}</span>` : ""}
         <div class="idrow">${labelChips(l)}${idChips(l)}${l.flags.map((f) => `<span class="flag">${esc(f)}</span>`).join("")}</div></div></div></td>
-      <td>${esc(l.city || "–")} ${l.dep ? `<span class="tag">${esc(l.dep)}</span>` : ""}${l.id_?.dep_name ? `<div class="small muted">${esc(l.id_.dep_name)}${l.distance_km != null && l.distance_km < 60 ? ` · ${Math.round(l.distance_km)} km` : ""}</div>` : ""}</td>
+      <td>${flag(l.country)} ${esc(l.city || "–")} ${l.dep ? `<span class="tag">${esc(l.dep)}</span>` : ""}${l.country && l.country !== "FR" ? `<div class="small muted">${esc(COUNTRY[l.country] || l.country)}</div>` : ""}${l.id_?.dep_name ? `<div class="small muted">${esc(l.id_.dep_name)}${l.distance_km != null && l.distance_km < 60 ? ` · ${Math.round(l.distance_km)} km` : ""}</div>` : ""}</td>
       <td><span class="ci"><span class="${mail}" title="${mail === "y" ? "Their email" : mail === "x" ? "Email found, but not theirs" : "No email"}">${I.mail}</span><span class="${tel}" title="${tel === "y" ? "Their phone" : tel === "x" ? "Phone found, but a switchboard" : "No phone"}">${I.tel}</span><span class="${l.website ? "y" : ""}" title="${l.website ? "Website" : "No website"}">${I.web}</span></span></td>
       <td><span class="leanbar"><span class="tr"><span style="width:${l.lean_median == null ? 0 : Math.min((l.lean_median / 8) * 100, 100)}%;background:${leanCol(l.lean_median)}"></span></span><span class="num small">${leanTxt(l.lean_median)}</span></span></td>
       <td>${pill(l.status)}</td>
@@ -395,13 +405,14 @@ export const pipeline = {
   kind: store.get("pipeKind", ""),
   async render() {
     const p = await api(`/api/pipeline${this.kind ? `?kind=${this.kind}` : ""}`);
-    const cols = [...STAGES, "lost"], cnt = p.counts;
+    // From "Contacted" on: the leads not contacted yet live in Leads and Today, not here.
+    const cols = [...STAGES.slice(1), "lost"], cnt = p.counts;
     const reached = (i) => STAGES.slice(i).reduce((a, s) => a + (cnt[s] || 0), 0);
     C().innerHTML = `<div class="view wide">
-      <div class="topline"><div><h1>Pipeline</h1><div class="sub">Drag a card to move it. Emails, replies and calls move leads on their own.</div></div><span class="grow"></span>
+      <div class="topline"><div><h1>Pipeline</h1><div class="sub">Everyone you've contacted. Drag a card to move it; emails, replies and calls move leads on their own. <a href="#leads">${(cnt.new || 0).toLocaleString("en")} not contacted yet</a> are in Leads.</div></div><span class="grow"></span>
         <div class="seg" role="group" aria-label="Segment"><button data-pk="" aria-pressed="${!this.kind}">All</button>${SEGS.map((k) => `<button data-pk="${k}" aria-pressed="${this.kind === k}">${KINDS_PL[k]}</button>`).join("")}</div></div>
-      <div class="board">${cols.map((s, i) => {
-        const n = cnt[s] || 0;
+      <div class="board">${cols.map((s) => {
+        const n = cnt[s] || 0, i = STAGES.indexOf(s);
         const conv = i >= 2 && i < STAGES.length && reached(i - 1) ? Math.round((reached(i) / reached(i - 1)) * 100) : null;
         return `<div class="col" data-col="${s}"><div class="col-h">${pill(s)} <span class="n">${n.toLocaleString("en")}</span>${conv != null ? `<span class="conv" title="Share of the previous stage that got this far">${conv}%</span>` : ""}</div>
           ${p.columns[s].map((l) => `<div class="kc k-${esc(l.kind)}" draggable="true" data-card="${l.id}" data-from="${s}" data-open="${l.id}"><b>${kindIcon(l.kind)} ${esc(l.person || l.name)}</b>${l.person ? `<div class="m">${esc(l.name)}</div>` : ""}${(l.labels || []).length || l.id_ ? `<div class="idrow">${labelChips(l)}${idChips(l, { max: 1, facts: false })}</div>` : ""}<div class="m"><span class="score ${scoreCls(l.score)}" style="width:30px;height:20px;font-size:11px">${l.score}</span><span>${esc(l.city || "")}</span><span class="grow"></span><span>${esc(when(l.last_contacted_at))}</span></div></div>`).join("")}
@@ -894,6 +905,11 @@ PROSPECT_IMAP_HOST=imap.gmail.com
 PROSPECT_MAIL_FROM_NAME=Yacine · Veralume
 PROSPECT_DAILY_SEND_CAP=30</pre>
           <p class="small muted" style="margin:0">The inbox is only read, never changed. Add <span class="mono">PROSPECT_MAIL_DRY_RUN=true</span> to try everything without sending.</p></section>
+        <section class="card camp"><h3>How emails go out</h3>
+          <div class="ab-pick">${[
+            ["manual", "I send each one myself", "Campaigns write the day's emails; they wait in Today. You read each one, press Send, and the next one opens. Nothing leaves without your click. Best to start."],
+            ["scheduled", "I approve, the app sends", "You approve the day's emails (or a whole campaign) and the app sends them a few minutes apart, Monday to Friday 9:00–18:00."],
+          ].map(([v, t, d]) => `<label class="ab-opt"><input type="radio" name="send-mode" value="${v}" ${s.send_mode === v ? "checked" : ""}><div><b>${t}</b><div class="small muted">${d}</div></div></label>`).join("")}</div></section>
         <section class="card camp"><h3>Writing with AI</h3>
           <p class="small muted" style="margin:0">Type what you want in the composer or the template editor, and the AI writes or rewrites the email. It only gets what the app knows about the lead, and is told not to invent anything. You always review before sending.</p>
           <div class="ab-pick">${ai.providers.map((p) => `<label class="ab-opt" style="${p.configured ? "" : "opacity:.65;cursor:default"}"><input type="radio" name="ai-provider" value="${p.key}" ${p.key === ai.current ? "checked" : ""} ${p.configured ? "" : "disabled"}>
@@ -924,6 +940,10 @@ PROSPECT_DAILY_SEND_CAP=30</pre>
       await busy(f.querySelector(".primary"), async () => { await api("/api/ai", { method: "PUT", body: { brief: f.brief.value, ...(provider ? { provider } : {}) } }); toast("Saved"); });
     };
     C().onchange = async (e) => {
+      if (e.target.name === "send-mode") {
+        await api("/api/settings", { method: "PUT", body: { send_mode: e.target.value } }).catch(fail);
+        return toast(e.target.value === "manual" ? "You send each email yourself, from Today." : "Approved emails now go out on their own, spaced out.");
+      }
       if (e.target.name !== "ai-provider") return;
       try { await api("/api/ai", { method: "PUT", body: { provider: e.target.value } }); toast("AI switched"); } catch (err) { fail(err); }
     };

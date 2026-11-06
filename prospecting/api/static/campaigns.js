@@ -1,7 +1,7 @@
 // Campaigns: the list, one campaign (a three-step builder while it's a draft, its results
 // once started) and dossiers (reusable sets of images).
 import {
-  $, aiBar, api, busy, changed, closeModal, confetti, esc, fail, I, idChips, kindIcon, KINDS_PL, LABELS, labelChips, openModal,
+  $, aiBar, api, busy, changed, closeModal, confetti, COUNTRY, esc, fail, flag, I, idChips, kindIcon, KINDS_PL, LABELS, labelChips, openModal,
   small, toast, when, wireAiBar,
 } from "./core.js";
 import { openLead } from "./lead.js";
@@ -76,6 +76,7 @@ export const campaignView = {
     if (B.c?.id !== id) Object.assign(B, { step: "who", ver: 0, depOptions: [], aud: null, shown: 25, look: [], lookQ: "" });
     c.included = c.included || [];
     B.c = c;
+    B.manual = (await api("/api/settings").catch(() => ({}))).send_mode !== "scheduled";
     if (c.status === "draft") {
       B.dossiers = (await api("/api/dossiers")).items;
       renderBuilder();
@@ -148,7 +149,7 @@ function drawSteps() {
   const steps = [
     ["who", "Who", a ? `${a.chosen} of ${a.matching.toLocaleString("en")} leads` : "…"],
     ["emails", n > 1 ? "Emails · A/B test" : "Email", n > 1 ? `${n} versions to compare` : "one version"],
-    ["sending", "Sending", `${c.daily_cap} a day · ${c.review === "auto" ? "approved once" : "you review daily"}`],
+    ["sending", "Sending", `${c.daily_cap} a day · ${B.manual ? "you send each one" : c.review === "auto" ? "approved once" : "you review daily"}`],
   ];
   const el = $("[data-steps]");
   if (el) el.innerHTML = steps.map(([k, t, sub], i) => `<li><button data-go="${k}" aria-current="${B.step === k ? "step" : "false"}"><span class="cb-n">${i + 1}</span><span><b>${t}</b><span class="small muted">${esc(sub)}</span></span></button></li>`).join("");
@@ -217,6 +218,7 @@ function activeFilters(f) {
   (f.tags_none || []).forEach((t) => out.push([`not ${tagName(t)}`, "tags_none", t]));
   (f.labels_any || []).forEach((id) => out.push([`tagged ${LABELS.byId[id]?.name || "?"}`, "labels_any", id]));
   (f.labels_none || []).forEach((id) => out.push([`not tagged ${LABELS.byId[id]?.name || "?"}`, "labels_none", id]));
+  (f.countries || []).forEach((c) => out.push([`in ${COUNTRY[c] || c}`, "countries", c]));
   (f.deps || []).forEach((d) => out.push([`in ${d}`, "deps", d]));
   (f.networks || []).forEach((n) => out.push([n, "networks", n]));
   if (f.network === "independent") out.push(["independent (no network)", "network"]);
@@ -273,6 +275,7 @@ function stepWho() {
           <label class="fchip sel">within <select data-km aria-label="Distance from Strasbourg">${[["", "any distance"], [10, "10 km"], [20, "20 km"], [40, "40 km"], [60, "60 km"], [100, "100 km"], [200, "200 km"]].map(([v, t]) => `<option value="${v}" ${String(f.max_km || "") === String(v) ? "selected" : ""}>${t}</option>`).join("")}</select> of Strasbourg</label>
           <label class="fchip sel ftext">town <input id="f-town" data-ftext="town" value="${esc(f.town || "")}" placeholder="e.g. Colmar" autocomplete="off"></label>
         </div>
+        ${Object.keys(fa.countries || {}).length > 1 || (f.countries || []).length ? `<div class="chips"><span class="small muted">Country</span>${Object.keys(COUNTRY).filter((c) => fa.countries?.[c] || (f.countries || []).includes(c)).map((c) => chip(`${flag(c)} ${esc(COUNTRY[c])}`, `data-flist="countries" data-fval="${c}"`, (f.countries || []).includes(c), (f.countries || []).length ? null : fa.countries?.[c])).join("")}</div>` : ""}
         ${opts.length > 1 || (f.deps || []).length ? `<div class="chips"><span class="small muted">Département</span>${shownDeps.map((d) => chip(esc(d), `data-dep="${esc(d)}"`, (f.deps || []).includes(d), (f.deps || []).length ? null : depN(d))).join("")}
           ${rest.length ? `<select class="dep-more" data-dep-add aria-label="Another département"><option value="">+ another (${rest.length})</option>${rest.map((x) => `<option value="${esc(x.dep)}">${esc(x.dep)} · ${x.n}</option>`).join("")}</select>` : ""}</div>` : ""}
       </details>
@@ -406,14 +409,16 @@ function stepSending() {
   const c = B.c;
   const today = new Date().toISOString().slice(0, 10);
   return `<h2>When does it go out?</h2>
-    <p class="muted">From your mailbox, a few minutes apart, Monday to Friday 9:00–18:00, so each email stays personal and your address stays healthy.</p>
+    <p class="muted">${B.manual ? "From your mailbox, when you press Send. The daily number keeps your new address healthy: start low and raise it week after week." : "From your mailbox, a few minutes apart, Monday to Friday 9:00–18:00, so each email stays personal and your address stays healthy."}</p>
     <div class="form-grid">
       <label>Emails a day<input class="input" type="number" min="1" max="60" data-f="daily_cap" value="${c.daily_cap}"></label>
       <label>Start<input class="input" type="date" min="${today}" data-f="start_on" value="${esc(c.start_on || "")}"><span class="small muted">empty: as soon as you start it</span></label>
     </div>
-    <div class="cb-sec"><h4>Before each email goes out</h4><div class="cb-opts">
+    ${B.manual ? `<div class="cb-sec"><h4>Before each email goes out</h4>
+      <div class="note ok">${small(I.check)} <span><b>You send each email yourself.</b> Each working morning, the day's emails (up to ${c.daily_cap}) are written and wait in Today. Read one, change it if you like, press Send, and the next one opens. Nothing leaves without your click. <a href="#settings">Change in Settings</a></span></div></div>`
+    : `<div class="cb-sec"><h4>Before each email goes out</h4><div class="cb-opts">
       <button data-review="daily" aria-pressed="${c.review !== "auto"}"><b>I review each morning's batch</b><span class="small muted" style="display:block">The day's emails wait in Today. Skim, edit if you like, approve them in one click.</span></button>
-      <button data-review="auto" aria-pressed="${c.review === "auto"}"><b>Approved once, for the whole campaign</b><span class="small muted" style="display:block">First emails go out on their own once started. Follow-ups still wait for you.</span></button></div></div>
+      <button data-review="auto" aria-pressed="${c.review === "auto"}"><b>Approved once, for the whole campaign</b><span class="small muted" style="display:block">First emails go out on their own once started. Follow-ups still wait for you.</span></button></div></div>`}</div></div>
     ${c.versions.length > 1 ? `<div class="note ok">${small(I.check)} <span>When one version is clearly better, the campaign page offers to send only that one to the leads left. Nothing switches without your click.</span></div>` : ""}`;
 }
 
@@ -445,7 +450,7 @@ function drawSummary() {
     <dl><dt>Who</dt><dd>${esc(KINDS_PL[c.kind])}${filt.length ? `: ${esc(filt.join(" · "))}` : ""}</dd>
       <dt>Order</dt><dd>${esc({ small: "Small and new first", score: "Best score first", random: "At random" }[c.order])}</dd>
       <dt>Emails</dt><dd>${c.versions.length > 1 ? `${c.versions.length} versions, ${Math.round(100 / c.versions.length)} % each` : "One version"}${nImg ? ` · ${plural(nImg, "image")}` : ""}${c.followups_on ? " · follow-ups" : ""}</dd>
-      <dt>Sending</dt><dd>${c.daily_cap} a day${c.start_on ? `, from ${esc(new Date(c.start_on).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))}` : ""} · ${c.review === "auto" ? "approved once" : "you approve each morning"}</dd></dl>
+      <dt>Sending</dt><dd>${c.daily_cap} a day${c.start_on ? `, from ${esc(new Date(c.start_on).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))}` : ""} · ${B.manual !== false ? "you send each one" : c.review === "auto" ? "approved once" : "you approve each morning"}</dd></dl>
     ${probs.map(([step, t, soft]) => `<button class="cb-prob ${soft ? "soft" : ""}" data-go="${step}">${esc(t)}</button>`).join("")}
     <button class="btn cb-go" data-start ${blocking.length ? "disabled" : ""}>Start campaign</button></section>
     <section class="card small"><b>Not sure yet?</b> It's saved as a draft as you go. Come back to it from Campaigns.</section>`;
@@ -472,7 +477,7 @@ function confirmStart() {
         const r = await api(`/api/campaigns/${c.id}/start`, { method: "POST" });
         closeModal();
         confetti();
-        toast(r.written ? `Started. ${plural(r.written, "email")} written for today: approve them in Today.` : `Started with ${plural(r.leads, "lead")}. The first emails are written ${startsLater ? `on ${c.start_on}` : "at the next sending hour"}.`, { ms: 6000 });
+        toast(r.written ? `Started. ${plural(r.written, "email")} written for today: ${B.manual ? "send them from Today" : "approve them in Today"}.` : `Started with ${plural(r.leads, "lead")}. The first emails are written ${startsLater ? `on ${c.start_on}` : "at the next sending hour"}.`, { ms: 6000 });
         B.c = null;
         changed();
       });
@@ -654,7 +659,7 @@ function renderResults(c) {
   C().innerHTML = `<div class="view wide cr">
     <div class="topline"><div style="flex:1;min-width:280px"><p class="small muted" style="margin:0"><a href="#campaigns">Campaigns</a> / ${esc(KINDS_PL[c.kind])}</p>
       <div class="row"><h1>${esc(c.name)}</h1>${statusPill(c.status)}</div>
-      <div class="sub">${c.started_at ? `Started ${esc(when(c.started_at))}` : ""} · ${c.daily_cap} a day · ${c.review === "auto" ? "approved once" : "you approve each morning"} · ${t.sent} of ${t.leads} emailed${r.days_left && live ? ` · about ${plural(r.days_left, "working day")} to go` : ""}</div></div>
+      <div class="sub">${c.started_at ? `Started ${esc(when(c.started_at))}` : ""} · ${c.daily_cap} a day · ${B.manual !== false ? "you send each one" : c.review === "auto" ? "approved once" : "you approve each morning"} · ${t.sent} of ${t.leads} emailed${r.days_left && live ? ` · about ${plural(r.days_left, "working day")} to go` : ""}</div></div>
       <div class="row">${c.status === "running" ? `<button class="btn" data-pause>Pause</button>` : c.status === "paused" ? `<button class="btn primary" data-resume>Resume</button>` : ""}
         ${c.status !== "draft" ? `<button class="btn" data-more>Add leads</button>` : ""}<button class="btn" data-dup title="A new draft with the same settings and emails">Duplicate</button>
         ${live ? `<button class="btn" data-settings>Settings</button>` : ""}</div></div>

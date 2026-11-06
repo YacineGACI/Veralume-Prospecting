@@ -111,6 +111,7 @@ def facets(s: Session, leads: list[Lead]) -> dict[str, Any]:
         "socials": {k: soc.get(k, 0) for k in SOCIALS},
         "networks": [{"name": k, "n": n} for k, n in nets.most_common(20)],
         "labels": dict(Counter(x for l in leads for x in set(l.labels or []))),
+        "countries": dict(Counter(l.country or "FR" for l in leads)),
     }  # fmt: skip
 
 
@@ -195,8 +196,11 @@ def candidates(
         Lead.kind == kind, Lead.do_not_contact.is_(False),
         Lead.status.in_(statuses), Lead.last_contacted_at.is_(None),
     )  # fmt: skip
-    if f.get("deps"):
-        q = q.where(or_(*[Lead.postcode.startswith(str(d)) for d in f["deps"]]))
+    if f.get("countries"):
+        q = q.where(func.coalesce(Lead.country, "FR").in_([str(c) for c in f["countries"]]))
+    if f.get("deps"):  # French départements: a German 67xxx postcode is not the Bas-Rhin
+        q = q.where(func.coalesce(Lead.country, "FR") == "FR",
+                    or_(*[Lead.postcode.startswith(str(d)) for d in f["deps"]]))
     if f.get("max_km"):
         q = q.where(Lead.distance_km <= float(f["max_km"]))
     lean_min = max(float(f.get("lean_min") or 0), 1.0 if needs_lean else 0)
@@ -408,7 +412,7 @@ def prepare(s: Session, c: Campaign, n: int | None = None) -> int:
             s, lead, subject=d["subject"], body=d["body"], template_id=t.id, campaign_id=c.id,
             attach_photo_id=d["attach_photo_id"], asset_ids=d["asset_ids"],
             experiment_id=exp_id if exp and exp.status == "running" else None,
-            status="approved" if c.review == "auto" else "queued",
+            status="approved" if c.review == "auto" and mailer.send_mode(s) == "scheduled" else "queued",
         )  # fmt: skip
         made += 1
     if not made and all(r.lead_id in written for r in rows):

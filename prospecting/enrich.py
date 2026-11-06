@@ -16,6 +16,8 @@ from __future__ import annotations
 import json
 import re
 import socket
+import threading
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -26,6 +28,7 @@ from selectolax.lexbor import LexborHTMLParser as HTMLParser
 from sqlalchemy import select
 
 from prospecting.config import settings
+from prospecting.countries import COUNTRIES
 from prospecting.db import Lead, Photo, now, session
 from prospecting.http import Fetcher, Page
 from prospecting.leads import distance_from_center
@@ -57,19 +60,24 @@ _TAGS = {
     "new_build": r"programme neuf|immobilier neuf|\bvefa\b",
     "prestige": r"\bprestige\b|\bluxe\b|biens d.exception",
     "commercial": r"immobilier d.entreprise|locaux commerciaux|fonds de commerce|bureaux a louer",
-    "virtual_tour": r"visite virtuelle|matterport|visite 360",
-    "drone": r"\bdrone\b",
+    "virtual_tour": r"visite virtuelle|matterport|visite 360|virtuelle?r? (rundgang|tour)|"
+    r"virtuele tour|360.?(grad|rundgang)|tour virtuel|visita virtuale",
+    "drone": r"\bdrone\b|\bdrohne|\bdrohnen|luftaufnahme",
     "home_staging": r"home staging",
-    "pro_photos": r"photographe professionnel|photos? professionnelles?|reportage photo",
-    "real_estate": r"immobili",
+    "pro_photos": r"photographe professionnel|photos? professionnelles?|reportage photo|"
+    r"professionelle fotos|professionele foto",
+    # French, German, Italian (immobili…), Dutch, English.
+    "real_estate": r"immobili|vastgoed|real estate|makelaar",
 }
 
 _PAGE_KEYS = [
-    (r"contact|coordonnees|nous-trouver", 5),
-    (r"mentions-legales|mentions_legales|legal|mentions", 5),
-    (r"equipe|a-propos|qui-sommes|notre-agence|l-agence|about|presentation", 3),
+    (r"contact|coordonnees|nous-trouver|kontakt|contatt", 5),
+    (r"mentions-legales|mentions_legales|legal|mentions|impressum|colofon", 5),
+    (r"equipe|a-propos|qui-sommes|notre-agence|l-agence|about|presentation|ueber-mich|"
+     r"uber-mich|ueber-uns|uber-uns|over-mij|over-ons|chi-siamo", 3),  # fmt: skip
     (
-        r"vente|acheter|achat|nos-biens|biens|annonces|catalogue|proprietes|portfolio|realisations|galerie",
+        r"vente|acheter|achat|nos-biens|biens|annonces|catalogue|proprietes|portfolio|realisations|"
+        r"galerie|referenzen|projekte|immobilien",
         4,
     ),
 ]
@@ -88,6 +96,11 @@ _IMG_URL = re.compile(r"https?://[^\s\"'<>()]+?\.(?:jpe?g|webp)(?:\?[^\s\"'<>()]
 _PUBLISHER = re.compile(
     r"(?i:directeur|directrice|responsable)\s+(?i:de\s+(?:la\s+)?)?(?i:publication)\s*[:\-–]?\s*"
     r"(?:(?i:M\.|Mr|Mme|Monsieur|Madame)\s+)?([A-ZÀ-Ý][\w'’\-]+(?:\s+[A-ZÀ-Ý][\w'’\-]+){1,2})"
+)
+# German legal notice (Impressum): 'Inhaber: Max Mustermann'.
+_OWNER = re.compile(
+    r"(?i:inhaber(?:in)?|verantwortlich(?:\s+f(?:ü|ue)r\s+den\s+inhalt)?)\s*[:\-–]?\s*"
+    r"(?:(?i:Herr|Frau)\s+)?([A-ZÄÖÜ][\wäöüß'’\-]+(?:\s+[A-ZÄÖÜ][\wäöüß'’\-]+){1,2})"
 )
 
 
@@ -123,6 +136,7 @@ class LeadView:
     postcode: str | None
     website: str | None
     website_source: str | None
+    country: str = "FR"
 
 
 # --- website discovery -------------------------------------------------------------
@@ -166,8 +180,9 @@ def _profile_for(lead: LeadView, profiles: dict[str, dict[str, str]]) -> tuple[s
     return None
 
 
-def guess_domains(name: str) -> list[str]:
+def guess_domains(name: str, country: str = "FR") -> list[str]:
     toks = name_tokens(name)
+    tlds = (*COUNTRIES[country].tlds[-1:], ".com") if country in COUNTRIES else (".fr", ".com")
     if not toks or sum(len(t) for t in toks) < 4:
         return []
     joined, dashed = "".join(toks), "-".join(toks)
@@ -176,7 +191,7 @@ def guess_domains(name: str) -> list[str]:
     for b in bases:
         for pre, suf in [("", ""), ("", "-immobilier"), ("", "immobilier"), ("", "-immo"),
                          ("", "immo"), ("immobilier-", ""), ("agence-", "")]:  # fmt: skip
-            for tld in (".fr", ".com"):
+            for tld in tlds:
                 out.append(pre + b + suf + tld)
         out.append(b + ".immo")
     return list(dict.fromkeys(out))
@@ -226,7 +241,7 @@ def discover(lead: LeadView, fetcher: Fetcher, profiles: dict) -> tuple[str, str
         if _profile_is_local(lead, fetcher.get(hit[1])):
             return hit[1], f"{hit[0]} sitemap, same département on the profile"
     for name in dict.fromkeys(filter(None, [lead.name, lead.legal_name])):
-        for domain in guess_domains(name):
+        for domain in guess_domains(name, lead.country):
             if not _resolves(domain):
                 continue
             page = fetcher.get(f"https://{domain}/") or fetcher.get(f"http://{domain}/")
@@ -332,7 +347,7 @@ def read_site(lead: LeadView, site: str, fetcher: Fetcher, f: Findings) -> None:
         for e in find_emails(" ".join(mailtos) + " " + text):
             if email_belongs(e, site):
                 f.emails.append((e, p.final_url))
-        for ph in find_phones(" ".join(tels) + " " + text):
+        for ph in find_phones(" ".join(tels) + " " + text, lead.country):
             f.phones.append((ph, p.final_url))
         low = ascii_lower(text)
         for tag, pat in _TAGS.items():
@@ -342,6 +357,8 @@ def read_site(lead: LeadView, site: str, fetcher: Fetcher, f: Findings) -> None:
             f.people.append(
                 (pretty_name(m.group(1).strip()), "Directeur de la publication", p.final_url)
             )
+        elif lead.country in ("DE", "CH", "LU") and (m := _OWNER.search(text)):
+            f.people.append((m.group(1).strip(), "Inhaber", p.final_url))
         path = urlsplit(p.final_url).path
         if p is not home and (_DETAIL.search(path) or _PHOTO_PAGE.search(path)):
             listing_imgs += [(u, p.final_url) for u in _image_urls(p) if u not in site_imgs]
@@ -351,7 +368,8 @@ def read_site(lead: LeadView, site: str, fetcher: Fetcher, f: Findings) -> None:
         listing_imgs += [(u, home.final_url) for u in site_imgs]
     f.photos = list(dict((u, (u, pg)) for u, pg in reversed(listing_imgs)).values())[::-1][:16]
     if not lead.postcode:
-        f.location = locate(texts[1:] + texts[:1])  # contact / legal pages before home
+        pages = texts[1:] + texts[:1]  # contact / legal pages before home
+        f.location = locate(pages) if lead.country == "FR" else locate_abroad(pages, lead.country)
     if lead.kind == "photographer" and "real_estate" not in f.tags:
         f.note = "no real-estate work found on the site"
 
@@ -383,6 +401,55 @@ def locate(texts: list[str]) -> tuple[str, str, float, float] | None:
                 if town.startswith(name) and c.get("centre"):
                     lon, lat = c["centre"]["coordinates"]
                     return c["nom"], m.group(1), lat, lon
+    return None
+
+
+_NOMINATIM_LOCK = threading.Lock()
+_NOMINATIM_LAST = [0.0]
+
+
+def _nominatim(params: dict) -> list[dict]:
+    """OpenStreetMap's geocoder: free, one request a second at most (its usage policy)."""
+    with _NOMINATIM_LOCK:
+        wait = 1.1 - (time.monotonic() - _NOMINATIM_LAST[0])
+        if wait > 0:
+            time.sleep(wait)
+        _NOMINATIM_LAST[0] = time.monotonic()
+        try:
+            r = httpx.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={**params, "format": "json", "limit": 1},
+                headers={"User-Agent": settings.user_agent},
+                timeout=15,
+            )
+            r.raise_for_status()
+            return r.json()
+        except (httpx.HTTPError, ValueError):
+            return []
+
+
+def locate_abroad(texts: list[str], country: str) -> tuple[str, str, float, float] | None:
+    """The first 'postcode Town' written the way `country` writes addresses, placed by
+    Nominatim within that country."""
+    c = COUNTRIES.get(country)
+    if c is None or c.postcode is None:
+        return None
+    tried = 0
+    for text in texts:
+        for m in c.postcode.finditer(text):
+            if tried >= 3:
+                return None
+            tried += 1
+            pc = m.group("pc").replace(" ", "")
+            if country == "CA":
+                pc = f"{pc[:3]} {pc[3:]}"
+            town = re.split(r"\s{2,}|\s(?:Tel|Tél|Fon|Phone|E-?mail|Mobil|Mob|GSM)\b", m.group("town"))[0]
+            town = town.strip(" ,.-")
+            if len(town) < 2:
+                continue
+            hits = _nominatim({"q": f"{pc} {town}", "countrycodes": country.lower()})
+            if hits:
+                return town[:120], pc, float(hits[0]["lat"]), float(hits[0]["lon"])
     return None
 
 
@@ -476,6 +543,7 @@ def run(
                 l.postcode,
                 l.website,
                 l.website_source,
+                l.country or "FR",
             )  # fmt: skip
             for l in leads
         ]
