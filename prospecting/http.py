@@ -30,7 +30,7 @@ class Page:
 class Fetcher:
     def __init__(self, interval_s: float | None = None, use_cache: bool = True):
         self.interval_s = settings.host_interval_s if interval_s is None else interval_s
-        self.use_cache = use_cache
+        self.use_cache = use_cache and settings.cache_pages
         self.client = httpx.Client(
             follow_redirects=True,
             timeout=httpx.Timeout(15.0, connect=8.0),
@@ -43,7 +43,8 @@ class Fetcher:
         self._last: dict[str, float] = {}
         self._lock = threading.Lock()
         self._cache_dir = settings.cache_dir
-        self._cache_dir.mkdir(parents=True, exist_ok=True)
+        if self.use_cache:
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
 
     def close(self) -> None:
         self.client.close()
@@ -92,13 +93,14 @@ class Fetcher:
         self._wait(urlsplit(url).netloc)
         try:
             r = self.client.get(url)
-        except (httpx.HTTPError, UnicodeError, ValueError):
+        except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError, UnicodeError, ValueError):
             return None
         ctype = r.headers.get("content-type", "")
         if r.status_code >= 400 or "html" not in ctype or len(r.content) > max_bytes:
             return None
         page = Page(url, str(r.url), r.status_code, ctype, r.text)
-        path.write_text(json.dumps({**page.__dict__, "fetched_at": now()}, ensure_ascii=False))
+        if self.use_cache:
+            path.write_text(json.dumps({**page.__dict__, "fetched_at": now()}, ensure_ascii=False))
         return page
 
     def get_bytes(self, url: str, max_bytes: int = 8_000_000) -> bytes | None:
@@ -115,5 +117,5 @@ class Fetcher:
                     if len(data) > max_bytes:
                         return None
                 return bytes(data)
-        except (httpx.HTTPError, UnicodeError, ValueError):
+        except (httpx.HTTPError, httpx.InvalidURL, httpx.StreamError, UnicodeError, ValueError):
             return None

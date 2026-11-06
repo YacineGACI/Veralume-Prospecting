@@ -9,6 +9,7 @@ from sqlalchemy import func, select
 
 from prospecting import enrich, languages, scoring, screen
 from prospecting.areas import RINGS
+from prospecting.config import settings
 from prospecting.db import Lead, SearchQuery, session
 from prospecting.sources import abroad as abroad_src
 from prospecting.sources import business, directory, osm, photographers, registre
@@ -85,7 +86,8 @@ def run(
         counts = enrich.run(limit=batch)
         if not counts:
             break
-        screen.run()
+        if settings.measure_photos:
+            screen.run()
         scoring.rescore()
         typer.echo(f"reachable leads: {_reachable()} / {target}")
     scoring.rescore()
@@ -113,7 +115,8 @@ def expand(
                 towns=None if ring.key == "circle-30" else ring.towns
             )
         enrich.run()
-        screen.run()
+        if settings.measure_photos:
+            screen.run()
         scoring.rescore()
         typer.echo(f"{ring.label}: {_reachable()} reachable / {target}")
     stats()
@@ -184,8 +187,8 @@ def languages_cmd(
 
 
 def _read_then_prune() -> None:
-    """Read the new sites first and drop the non-real-estate OSM studios, so their
-    photos are never downloaded and measured."""
+    """Read the new sites (contacts, real-estate work, language), then drop the OSM
+    studios that show no real-estate work."""
     with session() as s:
         ids = list(
             s.scalars(
@@ -195,7 +198,8 @@ def _read_then_prune() -> None:
     if ids:
         enrich.run(lead_ids=ids)
     abroad_src.prune()
-    _process_new_photographers()
+    # No photo downloads: you don't need the photographers' website photos (2026-11-05).
+    scoring.rescore()
 
 
 def _country_stats() -> None:
@@ -236,7 +240,7 @@ def _process_new_photographers() -> None:
                 )
             )
         )
-    if unmeasured:
+    if unmeasured and settings.measure_photos:
         screen.run(lead_ids=unmeasured)
     business.run()
     scoring.rescore()

@@ -126,3 +126,11 @@ def test_you_choose_the_language_and_filter_on_it(db):
     with db() as s:
         got = {l.id: l.language for l in C.candidates(s, "photographer", {"languages": ["fr"]})}
     assert got == {nl: "fr"}
+
+
+def test_an_absurd_photo_address_is_a_failed_download_not_a_crash():
+    from prospecting.http import Fetcher
+
+    f = Fetcher()
+    assert f.get_bytes("https://example.com/" + "a" * 70_000) is None
+    assert f.get("https://example.com/" + "a" * 70_000) is None

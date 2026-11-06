@@ -404,9 +404,10 @@ def set_website(lead_id: int, w: WebsiteIn) -> dict[str, Any]:
 
 @app.post("/api/leads/{lead_id}/refresh")
 def refresh(lead_id: int) -> dict[str, Any]:
-    """Re-read the website and re-measure the photos for one lead."""
+    """Re-read the website (and re-measure the photos, if measuring is on) for one lead."""
     enrich.run(lead_ids=[lead_id], retry=True, progress=lambda _: None)
-    screen.run(lead_ids=[lead_id], retry=True, progress=lambda _: None)
+    if settings.measure_photos:
+        screen.run(lead_ids=[lead_id], retry=True, progress=lambda _: None)
     scoring.rescore([lead_id])
     return lead(lead_id)
 

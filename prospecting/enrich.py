@@ -165,7 +165,8 @@ def network_profiles(fetcher: Fetcher) -> dict[str, dict[str, str]]:
             _name_key(u.rstrip("/").rsplit("/", 1)[-1]): u
             for u in re.findall(r"<loc>([^<]+)</loc>", r.text)
         }
-    path.write_text(json.dumps(out))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(out))  # the networks' agent lists, not web pages
     return out
 
 

@@ -33,6 +33,12 @@ class Settings(BaseSettings):
     user_agent: str = "VeralumeProspecting/0.1 (B2B lead research)"
     host_interval_s: float = 1.5
     search_interval_s: float = 25.0
+    # Keep a copy of every web page read (data/cache). Off: you asked not to keep them
+    # (2026-11-06); a site is simply downloaded again if it is ever re-read.
+    cache_pages: bool = False
+    # Download and measure listing photos automatically (imports, refresh). Off: you don't
+    # need the measurements for now (2026-11-06). `prospect screen` still does it on demand.
+    measure_photos: bool = False
     cache_days: int = 14
 
     max_pages_per_site: int = 8

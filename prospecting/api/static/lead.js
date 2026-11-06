@@ -209,7 +209,7 @@ function photosSec(l) {
   if (!l.photos.length) {
     const q = encodeURIComponent(`${l.name} ${l.city || ""}`);
     return `<div class="sec"><h4>Their website photos</h4>
-      ${l.website ? `<p class="small muted" style="margin:0 0 8px">No photos measured yet.</p><button class="btn sm" data-refresh>${small(I.refresh)} Read their site and measure</button>`
+      ${l.website ? `<p class="small muted" style="margin:0 0 8px">No photos measured yet.</p><button class="btn sm" data-refresh>${small(I.refresh)} Read their site again</button>`
         : `<p class="small muted" style="margin:0 0 8px">No website found. <a href="https://duckduckgo.com/?q=${q}" target="_blank" rel="noopener">Search the web</a>, then paste it here: the app reads it and measures the photos (about 30 s).</p>
            <form class="inline-form" data-form="website"><input class="input" name="website" placeholder="https://their-site.fr" required><button class="btn sm">Read site</button></form>`}</div>`;
   }
