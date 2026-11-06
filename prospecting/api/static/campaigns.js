@@ -4,7 +4,7 @@ import {
   $, aiBar, api, busy, changed, closeModal, confetti, COUNTRY, esc, fail, flag, I, LANG, idChips, kindIcon, KINDS_PL, LABELS, labelChips, openModal,
   small, toast, when, wireAiBar,
 } from "./core.js";
-import { openLead } from "./lead.js";
+import { openLead, openReview } from "./lead.js";
 import { campaigns as templatesUI } from "./views.js";
 
 const C = () => $("#canvas");
@@ -16,6 +16,14 @@ const plural = (n, one, many = one + "s") => `${n.toLocaleString("en")} ${n === 
 const STATUS = { draft: ["Draft", "st-new"], running: ["Running", "st-pilot"], paused: ["Paused", "st-contacted"], done: ["Finished", "st-customer"] };
 const statusPill = (s) => `<span class="pill ${STATUS[s]?.[1] || ""}">${STATUS[s]?.[0] || esc(s)}</span>`;
 const workdays = (n, cap) => Math.max(1, Math.ceil(n / Math.max(cap, 1)));
+// Languages: a version's subject/body are in its main language; translations hold the
+// same email in others. A lead gets its own language, if every version is written in it.
+const mainLang = (v) => v.language || "fr";
+const vLangs = (v) => [mainLang(v), ...Object.keys(v.translations || {}).filter((x) => x !== mainLang(v))];
+const textOf = (v, lang) => (lang === mainLang(v) ? v : v.translations?.[lang] || { subject: "", body: "" });
+const written = (v, lang) => lang === mainLang(v) || !!(textOf(v, lang).subject?.trim() && textOf(v, lang).body?.trim());
+const coveredLangs = (vs) => vs.reduce((acc, v) => { const mine = vLangs(v).filter((l) => written(v, l)); return acc ? acc.filter((x) => mine.includes(x)) : mine; }, null) || ["fr"];
+const langList = (ls) => ls.map((l) => LANG[l] || l).join(", ");
 const usesLean = (vs) => vs.some((v) => `${v.subject} ${v.body}`.includes("{lean}"));
 
 // --- the list --------------------------------------------------------------------------
@@ -66,17 +74,19 @@ export const campaignsView = {
 
 // --- one campaign ------------------------------------------------------------------------
 
-const B = { c: null, aud: null, step: "who", ver: 0, depOptions: [], dossiers: null, timer: null, audTimer: null, shown: 25, look: [], lookQ: "", lookTimer: null };
+const B = { c: null, aud: null, step: "who", ver: 0, lang: null, sigs: null, sigTimer: null, depOptions: [], dossiers: null, timer: null, audTimer: null, shown: 25, look: [], lookQ: "", lookTimer: null };
 
 export const campaignView = {
   async render(arg) {
     const id = +arg;
     if (!id) { location.hash = "campaigns"; return; }
     const c = await api(`/api/campaigns/${id}`);
-    if (B.c?.id !== id) Object.assign(B, { step: "who", ver: 0, depOptions: [], aud: null, shown: 25, look: [], lookQ: "" });
+    if (B.c?.id !== id) Object.assign(B, { step: "who", ver: 0, lang: null, depOptions: [], aud: null, shown: 25, look: [], lookQ: "" });
     c.included = c.included || [];
     B.c = c;
-    B.manual = (await api("/api/settings").catch(() => ({}))).send_mode !== "scheduled";
+    const st = await api("/api/settings").catch(() => ({}));
+    B.manual = st.send_mode !== "scheduled";
+    B.sigs = { fr: st.signature || "", ...(st.signatures || {}) };
     if (c.status === "draft") {
       B.dossiers = (await api("/api/dossiers")).items;
       renderBuilder();
@@ -93,7 +103,7 @@ function payload() {
   return {
     name: c.name, kind: c.kind, filters: c.filters, size: c.size, order: c.order, excluded: c.excluded, included: c.included,
     daily_cap: c.daily_cap, review: c.review, metric: c.metric, start_on: c.start_on || "", followups_on: c.followups_on,
-    versions: c.versions.map((v) => ({ id: v.id || null, name: v.name, subject: v.subject, body: v.body, asset_ids: v.asset_ids, attach_photo: v.attach_photo })),
+    versions: c.versions.map((v) => ({ id: v.id || null, name: v.name, subject: v.subject, body: v.body, asset_ids: v.asset_ids, attach_photo: v.attach_photo, language: mainLang(v), translations: v.translations || {} })),
   };
 }
 function save() {
@@ -118,9 +128,10 @@ function refreshAudience(first = false) {
   B.audTimer = setTimeout(async () => {
     const c = B.c;
     try {
-      B.aud = await api("/api/campaigns/audience", { method: "POST", body: { kind: c.kind, filters: c.filters, order: c.order, size: c.size, excluded: c.excluded, included: c.included, shown: B.shown, campaign_id: c.id, needs_lean: usesLean(c.versions) } });
+      B.aud = await api("/api/campaigns/audience", { method: "POST", body: { kind: c.kind, filters: c.filters, order: c.order, size: c.size, excluded: c.excluded, included: c.included, shown: B.shown, campaign_id: c.id, needs_lean: usesLean(c.versions), languages: coveredLangs(c.versions) } });
       if (!(c.filters.deps || []).length) B.depOptions = B.aud.deps;
       if (B.step === "who") drawStep(); else drawSummary();
+      if (B.step === "emails") { drawLangTabs(); preview(); }
       drawSteps();
     } catch (e) { fail(e); }
   }, first ? 0 : 250);
@@ -350,6 +361,35 @@ function stepWho() {
       ${a?.excluded.length ? `<p class="small muted" style="margin:8px 0 0">Left out by you: ${a.excluded.map((l) => `${esc(l.person || l.name)} <button class="linkish small" data-unexclude="${l.id}">put back</button>`).join(" · ")}</p>` : ""}</div>`;
 }
 
+function curLang(v) {
+  const ls = vLangs(v);
+  return ls.includes(B.lang) ? B.lang : ls[0];
+}
+
+function langTabs(v) {
+  const c = B.c, main = mainLang(v), cur = curLang(v), ls = vLangs(v);
+  const n = B.aud?.by_language || {}, left = B.aud?.left_out || {};
+  const others = Object.keys(LANG).filter((l) => !ls.includes(l)).sort((a, b) => (n[b] || 0) - (n[a] || 0));
+  const many = c.versions.length > 1;
+  const onlyHere = many ? ls.filter((l) => written(v, l) && c.versions.some((x) => !vLangs(x).includes(l) || !written(x, l))) : [];
+  return `<div class="cb-ltabs" role="tablist" aria-label="Languages"><span class="small muted">Language</span>
+      ${ls.map((l) => `<button role="tab" data-lang-tab="${l}" aria-selected="${l === cur}" title="${n[l] || 0} matching leads speak ${esc(LANG[l])}">${esc(LANG[l])}${l === main ? ` <span class="small muted">main</span>` : ""} <span class="mono small muted">${n[l] || 0}</span>${written(v, l) ? "" : ` <span class="lt-todo" title="Needs a subject and a text">to write</span>`}</button>`).join("")}
+      <select class="input sm" data-add-lang aria-label="Add a language"><option value="">+ Language</option>${others.map((l) => `<option value="${l}">${esc(LANG[l])}${n[l] ? ` · ${n[l]} leads` : ""}</option>`).join("")}</select>
+      ${cur === main ? `<label class="small muted lt-main">This text is in <select class="input sm" data-main-lang>${Object.keys(LANG).map((l) => `<option value="${l}" ${l === main ? "selected" : ""}>${esc(LANG[l])}</option>`).join("")}</select></label>`
+        : `<button class="btn ghost danger sm" data-del-lang="${cur}">Remove ${esc(LANG[cur])}</button>`}</div>
+    ${Object.keys(left).length ? `<div class="note warn"><span><b>${plural(Object.values(left).reduce((a, b) => a + b, 0), "lead")} left out</b>: no text in their language yet (${Object.entries(left).map(([l, k]) => `${esc(LANG[l] || l)} ${k}`).join(" · ")}). They aren't written to until it's added above. Nobody gets an email in a language they don't speak.</span></div>` : ""}
+    ${onlyHere.length ? `<div class="note info"><span>${esc(langList(onlyHere))}: written in some versions only. Leads speaking it join once every version has it.</span></div>` : ""}`;
+}
+
+function drawLangTabs() {
+  const v = B.c.versions[B.ver], el = $(".cb-ltabs");
+  if (!v || !el) return;
+  const tmp = document.createElement("div");
+  tmp.innerHTML = langTabs(v);
+  el.parentNode.querySelectorAll(":scope > .cb-ltabs ~ .note").forEach((n) => { if (!n.closest(".cb-ed")) n.remove(); });
+  el.replaceWith(...tmp.childNodes);
+}
+
 function stepEmails() {
   const c = B.c, v = c.versions[B.ver] || c.versions[0];
   const many = c.versions.length > 1;
@@ -357,14 +397,17 @@ function stepEmails() {
   const imgs = ds.flatMap((d) => d.images.map((x) => ({ ...x, dossier: d.name })));
   const picked = new Set(v.asset_ids);
   const VARS = ["prenom", "agence", "ville", "lean", "nb_images", "signature"];
+  const main = mainLang(v), lang = curLang(v), tx = textOf(v, lang);
   return `<h2>What do they get?</h2>
     <p class="muted">${many ? "Each lead gets one version, at random, in equal shares. Change one thing between versions (the subject, the length, the images) to learn what works." : "Write the email. Add a version B to compare two emails on the same leads."}</p>
     <div class="cb-vtabs" role="tablist" aria-label="Versions">${c.versions.map((x, i) => `<button role="tab" data-ver="${i}" aria-selected="${i === B.ver}"><span class="vl" style="background:${VCOL[i]}">${LET[i]}</span>${esc(x.name && x.name !== LET[i] ? x.name : `Version ${LET[i]}`)}${many ? ` <span class="small muted">${Math.round(100 / c.versions.length)} %</span>` : ""}</button>`).join("")}
       ${c.versions.length < 4 ? `<button class="cb-add" data-add-ver>+ Version ${LET[c.versions.length]} <span class="small muted">starts as a copy</span></button>` : ""}</div>
+    ${langTabs(v)}
     <div class="cb-ed">
       <div class="row"><label class="small muted" style="flex:1">Short name, for the results<input class="input" data-v="name" value="${esc(v.name && v.name !== LET[B.ver] ? v.name : "")}" placeholder="e.g. Long, with 3 images"></label>${many ? `<button class="btn ghost danger sm" data-del-ver style="align-self:end">Remove version ${LET[B.ver]}</button>` : ""}</div>
-      <label class="small muted">Subject<input class="input cb-subj" data-v="subject" value="${esc(v.subject)}" placeholder="{prenom}, votre avis sur ces retouches ?"></label>
-      <label class="small muted">Email<textarea class="input mailbody" data-v="body" lang="fr">${esc(v.body)}</textarea></label>
+      <label class="small muted">Subject${lang !== main ? ` in ${esc(LANG[lang])}` : ""}<input class="input cb-subj" data-v="subject" value="${esc(tx.subject)}" lang="${lang}" placeholder="${lang === main ? "{prenom}, votre avis sur ces retouches ?" : esc(v.subject)}"></label>
+      <label class="small muted">Email${lang !== main ? ` in ${esc(LANG[lang])}` : ""}<textarea class="input mailbody" data-v="body" lang="${lang}" placeholder="${lang === main ? "" : `The same email in ${esc(LANG[lang])}`}">${esc(tx.body)}</textarea></label>
+      ${lang !== "fr" ? `<label class="small muted">Your signature in ${esc(LANG[lang])} <span>(the {signature} placeholder, for every email in ${esc(LANG[lang])})</span><textarea class="input" rows="2" data-sig="${lang}" lang="${lang}" placeholder="${esc(B.sigs?.fr || "")}">${esc(B.sigs?.[lang] || "")}</textarea></label>` : ""}
       <div class="ins-row"><span class="small muted">Insert</span>${VARS.map((k) => `<button type="button" class="chip mono" data-ins="{${k}}">{${k}}</button>`).join("")}</div>
       ${aiBar(B.ai)}
       <div class="cb-imgs"><div class="row"><h4 style="margin:0">Images</h4><span class="small muted">${picked.size ? `${plural(picked.size, "image")} attached` : "none attached"}</span><span class="grow"></span><a class="small" href="#dossiers">Manage dossiers</a></div>
@@ -383,9 +426,11 @@ function preview() {
   pvTimer = setTimeout(async () => {
     const v = B.c.versions[B.ver], el = $("[data-preview]");
     if (!v || !el) return;
+    const lang = curLang(v), tx = textOf(v, lang);
     try {
-      const p = await api("/api/templates/preview", { method: "POST", body: { subject: v.subject, body: v.body, segment: B.c.kind, asset_ids: v.asset_ids, lead_id: B.aud?.preview?.[0]?.id ?? null } });
-      if (!p.lead) { el.innerHTML = `<p class="small muted" style="padding:12px 16px;margin:0">No lead to fill it in for yet.</p>`; return; }
+      const lead = (B.aud?.preview || []).find((x) => (x.language || "fr") === lang);
+      const p = await api("/api/templates/preview", { method: "POST", body: { subject: tx.subject, body: tx.body, segment: B.c.kind, asset_ids: v.asset_ids, lead_id: lead?.id ?? null, language: lang } });
+      if (!p.lead) { el.innerHTML = `<p class="small muted" style="padding:12px 16px;margin:0">No lead speaking ${esc(LANG[lang] || lang)} to fill it in for.</p>`; return; }
       const imgs = (B.dossiers || []).flatMap((d) => d.images);
       el.innerHTML = `<div class="pv-h"><span>To</span><b>${esc(p.to)}</b><span>Subject</span><b>${esc(p.subject)}</b></div><div class="pv-b">${esc(p.body)}<div class="optout">--\n${esc(p.footer)}</div></div>
         ${v.asset_ids.length ? `<div class="pv-a">${v.asset_ids.map((id) => imgs.find((x) => x.id === id)).filter(Boolean).map((x) => `<img src="${x.thumb}" alt="${esc(x.name)}">`).join("")}</div>` : ""}`;
@@ -429,9 +474,15 @@ function problems() {
   if (!a || !a.chosen) out.push(["who", "No lead matches the filters."]);
   c.versions.forEach((v, i) => {
     if (!v.subject.trim() || !v.body.trim()) out.push(["emails", `Version ${LET[i]} needs a subject and a text.`]);
-    const unknown = [...`${v.subject} ${v.body}`.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).filter((k) => !["prenom", "agence", "ville", "lean", "n", "site", "nb_images", "signature"].includes(k));
-    if (unknown.length) out.push(["emails", `Version ${LET[i]}: {${unknown[0]}} isn't a known placeholder.`]);
+    for (const l of vLangs(v)) {
+      const tx = textOf(v, l);
+      const unknown = [...`${tx.subject} ${tx.body}`.matchAll(/\{(\w+)\}/g)].map((m) => m[1]).filter((k) => !["prenom", "agence", "ville", "lean", "n", "site", "nb_images", "signature"].includes(k));
+      if (unknown.length) out.push(["emails", `Version ${LET[i]}${l !== mainLang(v) ? ` in ${LANG[l]}` : ""}: {${unknown[0]}} isn't a known placeholder.`]);
+      if (l !== mainLang(v) && !written(v, l) && (tx.subject.trim() || tx.body.trim())) out.push(["emails", `Version ${LET[i]} in ${LANG[l]} needs both a subject and a text.`, true]);
+    }
   });
+  const left = Object.values(a?.left_out || {}).reduce((x, y) => x + y, 0);
+  if (left) out.push(["emails", `${left} matching leads left out: no text in their language yet.`, true]);
   if (c.versions.length > 1 && a && a.chosen / c.versions.length < 20) out.push(["who", `Only ${Math.floor(a.chosen / c.versions.length)} leads per version: too few to tell versions apart. Aim for 40 or more each.`, true]);
   return out;
 }
@@ -451,7 +502,7 @@ function drawSummary() {
     <div class="cb-big2"><div><b>${chosen.toLocaleString("en")}</b><span>leads</span></div><div><b>${workdays(chosen, c.daily_cap)}</b><span>working days</span></div></div>
     <dl><dt>Who</dt><dd>${esc(KINDS_PL[c.kind])}${filt.length ? `: ${esc(filt.join(" · "))}` : ""}</dd>
       <dt>Order</dt><dd>${esc({ small: "Small and new first", score: "Best score first", random: "At random" }[c.order])}</dd>
-      <dt>Emails</dt><dd>${c.versions.length > 1 ? `${c.versions.length} versions, ${Math.round(100 / c.versions.length)} % each` : "One version"}${nImg ? ` · ${plural(nImg, "image")}` : ""}${c.followups_on ? " · follow-ups" : ""}</dd>
+      <dt>Emails</dt><dd>${c.versions.length > 1 ? `${c.versions.length} versions, ${Math.round(100 / c.versions.length)} % each` : "One version"}${nImg ? ` · ${plural(nImg, "image")}` : ""}${c.followups_on ? " · follow-ups" : ""} · in ${esc(langList(coveredLangs(c.versions)))}</dd>
       <dt>Sending</dt><dd>${c.daily_cap} a day${c.start_on ? `, from ${esc(new Date(c.start_on).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))}` : ""} · ${B.manual !== false ? "you send each one" : c.review === "auto" ? "approved once" : "you approve each morning"}</dd></dl>
     ${probs.map(([step, t, soft]) => `<button class="cb-prob ${soft ? "soft" : ""}" data-go="${step}">${esc(t)}</button>`).join("")}
     <button class="btn cb-go" data-start ${blocking.length ? "disabled" : ""}>Start campaign</button></section>
@@ -494,9 +545,30 @@ function onBuilderInput(e) {
   if (t.dataset.f === "name") { c.name = t.value; save(); return; }
   if (t.dataset.f === "daily_cap") { c.daily_cap = Math.max(1, Math.min(60, +t.value || 1)); save(); drawSteps(); return; }
   if (t.dataset.f === "start_on") { c.start_on = t.value || null; save(); drawSummary(); return; }
+  if (t.dataset.sig) {
+    B.sigs[t.dataset.sig] = t.value;
+    clearTimeout(B.sigTimer);
+    B.sigTimer = setTimeout(() => { const { fr, ...rest } = B.sigs; api("/api/settings", { method: "PUT", body: { signatures: rest } }).catch(fail); }, 500);
+    preview();
+    return;
+  }
+  if (t.matches("[data-add-lang]") && v && t.value) {
+    v.translations = { ...(v.translations || {}), [t.value]: { subject: "", body: "" } };
+    B.lang = t.value;
+    save(); drawStep(); return;
+  }
+  if (t.matches("[data-main-lang]") && v) {
+    const old = mainLang(v), now = t.value, tr = { ...(v.translations || {}) };
+    if (tr[now]) { tr[old] = { subject: v.subject, body: v.body }; v.subject = tr[now].subject; v.body = tr[now].body; delete tr[now]; }
+    v.language = now; v.translations = tr; B.lang = now;
+    save(); drawStep(); refreshAudience(); return;
+  }
   if (t.dataset.v && v) {
-    v[t.dataset.v] = t.value;
+    const lang = curLang(v), before = coveredLangs(c.versions).join();
+    if (t.dataset.v === "name" || lang === mainLang(v)) v[t.dataset.v] = t.value;
+    else v.translations[lang] = { ...textOf(v, lang), [t.dataset.v]: t.value };
     save();
+    if (coveredLangs(c.versions).join() !== before) { refreshAudience(); drawLangTabs(); }
     if (t.dataset.v !== "name") { preview(); drawSummary(); }
     if (t.dataset.v === "body" && usesLean(c.versions) !== B.lean) { B.lean = usesLean(c.versions); refreshAudience(); }
     return;
@@ -567,9 +639,17 @@ async function onBuilderClick(e) {
   else if (d.allList !== undefined) { B.shown = 100000; refreshAudience(); return; }
   else if (d.peek) { openLead(+d.peek); return; }
   else if (d.ver) { B.ver = +d.ver; drawStep(); return; }
+  else if (d.langTab) { B.lang = d.langTab; drawStep(); return; }
+  else if (d.delLang) {
+    if (d.confirm !== "1") { d.confirm = "1"; t.textContent = "Click again to remove"; return; }
+    const v = c.versions[B.ver], tr = { ...(v.translations || {}) };
+    delete tr[d.delLang];
+    v.translations = tr; B.lang = mainLang(v);
+    save(); drawStep(); refreshAudience(); return;
+  }
   else if (d.addVer !== undefined) {
     const cur = c.versions[B.ver];
-    c.versions.push({ id: null, name: "", subject: cur.subject, body: cur.body, asset_ids: [...cur.asset_ids], attach_photo: cur.attach_photo });
+    c.versions.push({ id: null, name: "", subject: cur.subject, body: cur.body, asset_ids: [...cur.asset_ids], attach_photo: cur.attach_photo, language: mainLang(cur), translations: structuredClone(cur.translations || {}) });
     B.ver = c.versions.length - 1;
     if (c.order !== "random" && c.versions.length === 2) toast("Tip: “At random” in step 1 makes the comparison fairest.");
     save(); drawSteps(); drawStep(); refreshAudience(); return;
@@ -594,7 +674,7 @@ async function onBuilderClick(e) {
   else if (d.test !== undefined) {
     await busy(t, async () => {
       await flushSave();
-      const r = await api(`/api/campaigns/${c.id}/test`, { method: "POST", body: {} });
+      const r = await api(`/api/campaigns/${c.id}/test`, { method: "POST", body: { language: curLang(c.versions[B.ver]) } });
       toast(`${plural(r.sent, "test email")} sent to ${r.to}, filled in for ${r.lead}.`, { ms: 6000 });
     });
     return;
@@ -633,18 +713,29 @@ function wire() {
 // --- results (started) ----------------------------------------------------------------------
 
 const STATE = {
-  not_sent: ["Not written yet", ""], to_review: ["Waiting for your review", "todo"], approved: ["Approved, going out", ""],
+  not_sent: ["Not sent yet", ""], to_review: ["Written, not sent", "todo"], approved: ["Approved, going out", ""],
   waiting: ["Sent, no reply yet", ""], replied: ["Replied", "ok"], interested: ["Interested", "ok"],
   stopped: ["Asked to stop", "bad"], failed: ["Not sent (error)", "bad"], skipped: ["Skipped (contacted another way)", ""],
 };
-let leadFilter = "replied";
+let leadFilter = "to_send";
+const TO_SEND = ["not_sent", "to_review", "approved", "failed"];
+
+/** Open this lead's email to read and send; "Send and next" goes on with the leads after it. */
+async function sendFrom(c, ids, i) {
+  if (i >= ids.length) { toast("That's everyone in this campaign for now."); return; }
+  try {
+    const item = await api(`/api/campaigns/${c.id}/leads/${ids[i]}/email`, { method: "POST" });
+    openReview(null, item, { manual: true, next: () => sendFrom(c, ids, i + 1), left: ids.length - i - 1 });
+  } catch (e) { fail(e); }
+}
 
 function renderResults(c) {
   const r = c.results, t = r.totals, test = r.test;
   const live = c.status === "running" || c.status === "paused";
-  const counts = { replied: t.replied + t.stopped, review: t.to_review + t.approved, waiting: t.sent - t.replied - t.stopped, not_sent: t.not_sent, all: t.leads };
-  if (!counts[leadFilter] && leadFilter !== "all") leadFilter = counts.replied ? "replied" : counts.review ? "review" : counts.waiting ? "waiting" : "all";
-  const show = r.leads.filter((l) => leadFilter === "all" || (leadFilter === "replied" ? ["replied", "interested", "stopped"].includes(l.state) : leadFilter === "review" ? ["to_review", "approved"].includes(l.state) : l.state === leadFilter));
+  const toSend = r.leads.filter((l) => TO_SEND.includes(l.state)).map((l) => l.id);
+  const counts = { to_send: toSend.length, waiting: t.sent - t.replied - t.stopped, replied: t.replied + t.stopped, all: t.leads };
+  if (!counts[leadFilter] && leadFilter !== "all") leadFilter = counts.to_send ? "to_send" : counts.replied ? "replied" : counts.waiting ? "waiting" : "all";
+  const show = r.leads.filter((l) => leadFilter === "all" || (leadFilter === "replied" ? ["replied", "interested", "stopped"].includes(l.state) : leadFilter === "to_send" ? TO_SEND.includes(l.state) : l.state === leadFilter));
   const vcard = (v, i) => {
     const tv = test?.versions.find((x) => x.template_id === v.template_id);
     const lead = test && test.leader === v.letter && t.sent;
@@ -654,7 +745,7 @@ function renderResults(c) {
       ${v.asset_ids.length ? `<div class="cr-imgs">${v.asset_ids.map((id) => `<img src="/api/assets/${id}/thumb" alt="">`).join("")}</div>` : ""}
       <div class="cr-nums"><div><b>${v.sent}</b><span>sent</span></div><div><b>${v.replied}</b><span>replied</span></div><div><b>${v.interested}</b><span>interested</span></div><div><b style="color:var(--vc)">${v.sent ? pct((test?.metric === "interested" ? v.interested : v.replied) / v.sent) : "–"}</b><span>${test?.metric === "interested" ? "interest" : "reply"} rate</span></div></div>
       ${tv && tv.sent ? `<div class="cr-bar"><span class="small muted">Likely ${test.metric === "interested" ? "interest" : "reply"} rate: ${pct(tv.low)} to ${pct(tv.high)}</span><div class="rng"><span style="left:${tv.low * 100}%;width:${Math.max(1, (tv.high - tv.low) * 100)}%"></span><i style="left:${(tv.rate || 0) * 100}%"></i></div></div>
-        <div class="cr-bar"><span class="small muted">Chance of being the best: ${pct(tv.chance_best)}</span><div class="pb"><span style="width:${tv.chance_best * 100}%"></span></div></div>` : `<p class="small muted" style="margin:0">${v.planned} planned · nothing sent yet</p>`}
+        <div class="cr-bar"><span class="small muted">Chance of being the best: ${pct(tv.chance_best)}</span><div class="pb"><span style="width:${tv.chance_best * 100}%"></span></div></div>` : `<p class="small muted" style="margin:0">${v.planned} planned · ${v.sent ? `${v.sent} sent so far` : "nothing sent yet"}</p>`}
     </article>`;
   };
   const maxDay = Math.max(1, ...r.days.map((d) => d.sent));
@@ -662,7 +753,8 @@ function renderResults(c) {
     <div class="topline"><div style="flex:1;min-width:280px"><p class="small muted" style="margin:0"><a href="#campaigns">Campaigns</a> / ${esc(KINDS_PL[c.kind])}</p>
       <div class="row"><h1>${esc(c.name)}</h1>${statusPill(c.status)}</div>
       <div class="sub">${c.started_at ? `Started ${esc(when(c.started_at))}` : ""} · ${c.daily_cap} a day · ${B.manual !== false ? "you send each one" : c.review === "auto" ? "approved once" : "you approve each morning"} · ${t.sent} of ${t.leads} emailed${r.days_left && live ? ` · about ${plural(r.days_left, "working day")} to go` : ""}</div></div>
-      <div class="row">${c.status === "running" ? `<button class="btn" data-pause>Pause</button>` : c.status === "paused" ? `<button class="btn primary" data-resume>Resume</button>` : ""}
+      <div class="row">${toSend.length && c.status !== "draft" ? `<button class="btn primary" data-send-next>${small(I.send, 15)} Send the next email <span class="small" style="opacity:.8">(${toSend.length} left)</span></button>` : ""}
+        ${c.status === "running" ? `<button class="btn" data-pause>Pause</button>` : c.status === "paused" ? `<button class="btn primary" data-resume>Resume</button>` : ""}
         ${c.status !== "draft" ? `<button class="btn" data-more>Add leads</button>` : ""}<button class="btn" data-dup title="A new draft with the same settings and emails">Duplicate</button>
         ${live ? `<button class="btn" data-settings>Settings</button>` : ""}</div></div>
     ${c.status === "paused" ? `<div class="note warn" style="margin-bottom:12px">Paused: no new emails are written. Approved first emails went back to review.</div>` : ""}
@@ -677,18 +769,21 @@ function renderResults(c) {
         <div class="cr-vs">${r.versions.map(vcard).join("")}</div>
         <p class="small muted" style="margin:0">“Likely rate” is where each version's true rate probably sits, given how few emails have gone out; the ranges narrow as more go. The verdict waits until each version has about 20 emails.</p></section>`
       : `<section class="card cr-test"><div class="cr-vs one">${r.versions.map(vcard).join("")}</div></section>`}
+    ${Object.keys(r.languages || {}).length > 1 ? `<section class="card cr-langs"><h2>By language</h2><div class="cr-lg">${Object.entries(r.languages).map(([l, x]) => `<div><b>${esc(LANG[l] || l)}</b><span class="small muted">${x.leads} leads · ${x.sent} sent · ${x.replied} replied${x.sent ? ` (${pct(x.replied / x.sent)})` : ""}</span></div>`).join("")}</div></section>` : ""}
     <div class="cr-low">
       <section class="card"><h2>Day by day</h2>${r.days.length ? `<div class="cr-days">${r.days.map((d) => `<div title="${d.day}: ${d.sent} sent, ${d.replies} replies"><span class="b" style="height:${(d.sent / maxDay) * 100}%"><span class="r" style="height:${d.sent ? Math.min(100, (d.replies / d.sent) * 100) : 0}%"></span></span><span class="small muted">${new Date(d.day).toLocaleDateString("en-GB", { weekday: "short" }).slice(0, 2)}</span></div>`).join("")}</div>
         <p class="small muted" style="margin:6px 0 0"><span class="sw" style="background:var(--emerald)"></span> sent · <span class="sw" style="background:var(--warn)"></span> replies</p>` : `<p class="small muted">Nothing sent yet.</p>`}</section>
-      <section class="card"><div class="row"><h2 style="flex:1">The ${t.leads} leads</h2><div class="seg" role="group" aria-label="Show">${[["replied", "Replied"], ["review", "To review"], ["waiting", "Waiting"], ["not_sent", "Not written"], ["all", "All"]].map(([k, l]) => `<button data-lf="${k}" aria-pressed="${leadFilter === k}">${l} <span class="mono small">${counts[k]}</span></button>`).join("")}</div></div>
-        ${show.length ? `<div class="cr-leads">${show.slice(0, 200).map((l) => `<button class="cr-lead" data-open="${l.id}"><span class="vl sm" style="background:${VCOL[LET.indexOf(l.letter)] || "var(--dim)"}">${esc(l.letter)}</span><span class="nm"><b>${esc(l.person || l.name)}</b> <span class="muted small">${esc(l.city || "")}</span>${l.reply ? `<span class="small muted q">“${esc(l.reply)}”</span>` : ""}</span><span class="chip-s ${STATE[l.state]?.[1] || ""}">${STATE[l.state]?.[0] || l.state}</span><span class="small muted">${esc(l.at ? when(l.at) : "")}</span></button>`).join("")}</div>` : `<p class="small muted">Nobody here.</p>`}</section>
+      <section class="card"><div class="row"><h2 style="flex:1">The ${t.leads} leads</h2><div class="seg" role="group" aria-label="Show">${[["to_send", "To send"], ["waiting", "Sent"], ["replied", "Replied"], ["all", "All"]].map(([k, l]) => `<button data-lf="${k}" aria-pressed="${leadFilter === k}">${l} <span class="mono small">${counts[k]}</span></button>`).join("")}</div></div>
+        ${show.length ? `<div class="cr-leads">${show.slice(0, 200).map((l) => `<div class="cr-lead ${TO_SEND.includes(l.state) ? "can-send" : ""}" data-open="${l.id}" role="button" tabindex="0"><span class="vl sm" style="background:${VCOL[LET.indexOf(l.letter)] || "var(--dim)"}">${esc(l.letter)}</span><span class="nm"><b>${esc(l.person || l.name)}</b> <span class="muted small">${esc(l.city || "")}</span>${l.reply ? `<span class="small muted q">“${esc(l.reply)}”</span>` : ""}</span><span class="chip-s ${STATE[l.state]?.[1] || ""}">${STATE[l.state]?.[0] || l.state}</span><span class="small muted">${esc(l.at ? when(l.at) : "")}</span>${TO_SEND.includes(l.state) && c.status !== "draft" ? `<button class="btn sm primary" data-send-lead="${l.id}">${small(I.send, 13)} Send</button>` : `<span></span>`}</div>`).join("")}</div>` : `<p class="small muted">Nobody here.</p>`}</section>
     </div></div>`;
   C().onclick = async (e) => {
-    const b = e.target.closest("button");
+    const b = e.target.closest("button, [data-open]");
     if (!b) return;
     const d = b.dataset;
     try {
-      if (d.lf) { leadFilter = d.lf; renderResults(c); }
+      if (d.sendLead) { const i = toSend.indexOf(+d.sendLead); await sendFrom(c, toSend, Math.max(0, i)); }
+      else if (d.sendNext !== undefined) await sendFrom(c, toSend, 0);
+      else if (d.lf) { leadFilter = d.lf; renderResults(c); }
       else if (d.open) openLead(+d.open);
       else if (d.pause !== undefined || d.resume !== undefined) await busy(b, async () => { await api(`/api/campaigns/${c.id}/status`, { method: "POST", body: { status: d.pause !== undefined ? "paused" : "running" } }); toast(d.pause !== undefined ? "Paused. Nothing new is written until you resume." : "Resumed."); changed(); });
       else if (d.dup !== undefined) await busy(b, async () => { const x = await api(`/api/campaigns/${c.id}/duplicate`, { method: "POST" }); location.hash = `campaign/${x.id}`; });

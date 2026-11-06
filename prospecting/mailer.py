@@ -24,7 +24,7 @@ from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from prospecting import pilot
+from prospecting import languages, pilot
 from prospecting.config import settings
 from prospecting.contacts import shared_contacts, usable_emails
 from prospecting.db import Activity, Campaign, Lead, Message, Photo, Setting, Template, now
@@ -35,10 +35,46 @@ UTC = ZoneInfo("UTC")
 DEFAULT_SIGNATURE = "Yacine\nVeralume · Strasbourg"
 DEFAULT_FOLLOWUPS = [{"days": 4, "template": "fu1"}, {"days": 10, "template": "fu2"}]
 DEFAULT_GOALS = {"email": 30, "call": 15, "reply": 3}
-OPT_OUT = (
-    "Vous ne souhaitez plus recevoir de message de ma part ? "
-    "Répondez « stop » et je ne vous écrirai plus."
-)
+# The footer of every email, in the lead's language: the opt-out, then where we found
+# the address.
+OPT_OUTS = {
+    "fr": ("Vous ne souhaitez plus recevoir de message de ma part ? "
+           "Répondez « stop » et je ne vous écrirai plus.", "votre adresse figure sur {}"),
+    "en": ("Would you rather not hear from me again? Reply “stop” and I won't write again.",
+           "your address is listed on {}"),
+    "de": ("Sie möchten keine Nachrichten mehr von mir erhalten? Antworten Sie „Stopp“, "
+           "und ich schreibe Ihnen nicht mehr.", "Ihre Adresse steht auf {}"),
+    "nl": ("Wilt u geen berichten meer van mij ontvangen? Antwoord „stop” en ik schrijf u "
+           "niet meer.", "uw adres staat op {}"),
+    "it": ("Non desidera più ricevere miei messaggi? Risponda «stop» e non le scriverò più.",
+           "il suo indirizzo è pubblicato su {}"),
+    "es": ("¿Prefiere no recibir más mensajes míos? Responda «stop» y no le volveré a escribir.",
+           "su dirección figura en {}"),
+    "pt": ("Prefere não receber mais mensagens minhas? Responda «stop» e não voltarei a "
+           "escrever-lhe.", "o seu endereço consta em {}"),
+    "sv": ("Vill du inte få fler meddelanden från mig? Svara ”stopp” så skriver jag inte igen.",
+           "din adress finns på {}"),
+    "da": ("Vil du ikke modtage flere beskeder fra mig? Svar ”stop”, så skriver jeg ikke igen.",
+           "din adresse står på {}"),
+    "no": ("Vil du ikke motta flere meldinger fra meg? Svar «stopp», så skriver jeg ikke igjen.",
+           "adressen din står på {}"),
+    "fi": ("Etkö halua enää viestejä minulta? Vastaa ”stop”, niin en kirjoita enää.",
+           "osoitteesi löytyy sivustolta {}"),
+    "pl": ("Nie chce Pan/Pani otrzymywać ode mnie wiadomości? Proszę odpowiedzieć „stop”, "
+           "a więcej nie napiszę.", "Pana/Pani adres widnieje na {}"),
+    "cs": ("Nechcete ode mě dostávat další zprávy? Odpovězte „stop“ a už vám nenapíšu.",
+           "vaše adresa je uvedena na {}"),
+}  # fmt: skip
+OPT_OUT = OPT_OUTS["fr"][0]
+# {lean} and {n} when nothing was measured, in each language.
+_SOME_DEGREES = {"fr": "quelques degrés", "en": "a few degrees", "de": "einige Grad",
+                 "nl": "een paar graden", "it": "qualche grado", "es": "unos grados",
+                 "pt": "alguns graus", "sv": "några grader", "da": "et par grader",
+                 "no": "noen grader", "fi": "muutaman asteen", "pl": "kilka stopni",
+                 "cs": "několik stupňů"}  # fmt: skip
+_SEVERAL = {"fr": "plusieurs", "en": "several", "de": "mehrere", "nl": "meerdere",
+            "it": "diverse", "es": "varias", "pt": "várias", "sv": "flera", "da": "flere",
+            "no": "flere", "fi": "useita", "pl": "kilka", "cs": "několik"}  # fmt: skip
 
 
 class MailError(Exception):
@@ -137,16 +173,30 @@ def best_photo(s: Session, lead_id: int) -> Photo | None:
     ).first()  # fmt: skip
 
 
-def variables(s: Session, lead: Lead) -> dict[str, str]:
+def signature(s: Session, lang: str = "fr") -> str:
+    """Your signature in that language (Settings, or the campaign's language tab); the
+    main one when there's none for it."""
+    main = get_setting(s, "signature", DEFAULT_SIGNATURE)
+    if lang == "fr":
+        return main
+    return (get_setting(s, "signatures", {}) or {}).get(lang) or main
+
+
+def variables(s: Session, lead: Lead, lang: str | None = None) -> dict[str, str]:
+    lang = lang or languages.of_lead(lead)
     lean = lead.lean_median
+    if lean is None:
+        deg = _SOME_DEGREES.get(lang, "a few degrees")
+    else:  # a decimal comma everywhere but in English
+        deg = (f"{lean:.1f}" if lang == "en" else f"{lean:.1f}".replace(".", ",")) + "°"
     return {
         "prenom": first_name(lead),
         "agence": lead.name,
         "ville": lead.city or "",
-        "lean": f"{lean:.1f}".replace(".", ",") + "°" if lean is not None else "quelques degrés",
-        "n": str(lead.photos_measured or "plusieurs"),
+        "lean": deg,
+        "n": str(lead.photos_measured or _SEVERAL.get(lang, "several")),
         "site": host(lead.website) if lead.website else "",
-        "signature": get_setting(s, "signature", DEFAULT_SIGNATURE),
+        "signature": signature(s, lang),
     }
 
 
@@ -165,7 +215,8 @@ def render(text: str, values: dict[str, str]) -> str:
     return re.sub(r"[ \t]{2,}", " ", out)
 
 
-def footer(lead: Lead, to: str) -> str:
+def footer(lead: Lead, to: str, lang: str | None = None) -> str:
+    opt_out, listed = OPT_OUTS.get(lang or languages.of_lead(lead), OPT_OUTS["en"])
     src = next(
         (e.get("source") for e in lead.emails or [] if e["value"].lower() == to.lower()), None
     )
@@ -175,8 +226,29 @@ def footer(lead: Lead, to: str) -> str:
         where = host(lead.website)
     else:
         where = None
-    origin = f" · votre adresse figure sur {where}" if where else ""
-    return f"{OPT_OUT}\n{settings.mail_from_name}, {settings.sender_city}{origin}"
+    origin = f" · {listed.format(where)}" if where else ""
+    return f"{opt_out}\n{settings.mail_from_name}, {settings.sender_city}{origin}"
+
+
+def main_language(t: Template) -> str:
+    return t.language or "fr"
+
+
+def text_in(t: Template, lang: str) -> tuple[str, str] | None:
+    """(subject, body) of the template in that language, or None if it isn't written
+    in it (a translation needs both a subject and a text)."""
+    if lang == main_language(t):
+        return t.subject, t.body
+    tr = (t.translations or {}).get(lang) or {}
+    if (tr.get("subject") or "").strip() and (tr.get("body") or "").strip():
+        return tr["subject"], tr["body"]
+    return None
+
+
+def languages_of(t: Template) -> list[str]:
+    """Every language the template can be sent in, its main one first."""
+    main = main_language(t)
+    return [main] + sorted(k for k in (t.translations or {}) if k != main and text_in(t, k))
 
 
 def fits_lead(t: Template, lead: Lead) -> bool:
@@ -226,15 +298,23 @@ def pick_template(s: Session, lead: Lead, step: int = 0) -> Template | None:
     return None
 
 
-def draft(s: Session, lead: Lead, template: Template) -> dict[str, Any]:
-    """Subject and body for one lead, ready to edit."""
-    v = variables(s, lead)
+def draft(s: Session, lead: Lead, template: Template, lang: str | None = None) -> dict[str, Any]:
+    """Subject and body for one lead, ready to edit: in the lead's language when the
+    template is written in it, otherwise in the template's main language. "language"
+    says which."""
+    want = lang or languages.of_lead(lead)
+    text = text_in(template, want)
+    if text is None:
+        want = main_language(template)
+        text = template.subject, template.body
+    v = variables(s, lead, want)
     assets = list(template.asset_ids or [])
     v["nb_images"] = str(len(assets))
     photo = best_photo(s, lead.id) if template.attach_photo else None
     return {
-        "subject": render(template.subject, v),
-        "body": render(template.body, v),
+        "language": want,
+        "subject": render(text[0], v),
+        "body": render(text[1], v),
         "attach_photo_id": photo.id if photo else None,
         "asset_ids": assets,
     }
@@ -300,7 +380,7 @@ def build(msg: Message, lead: Lead, s: Session) -> EmailMessage:
     em["Date"] = formatdate(localtime=True)
     # No List-Unsubscribe header: Gmail files mail carrying it under Promotions. A personal
     # one-to-one email doesn't need it; the opt-out sentence in the footer is what the law asks.
-    em.set_content(f"{msg.body.rstrip()}\n\n--\n{footer(lead, msg.to_addr or '')}\n")
+    em.set_content(f"{msg.body.rstrip()}\n\n--\n{footer(lead, msg.to_addr or '', msg.language)}\n")
     if msg.attach_photo_id:
         photo = s.get(Photo, msg.attach_photo_id)
         if photo and photo.path:
@@ -406,11 +486,12 @@ def new_outbound(
     status: str = "queued", due_at: str | None = None,
     experiment_id: int | None = None, edited: bool | None = None,
     asset_ids: list[int] | None = None, file_ids: list[int] | None = None,
+    language: str | None = None,
 ) -> Message:  # fmt: skip
     to = to or next(iter(usable_emails(lead, shared_contacts()[0])), None)
     msg = Message(
         lead_id=lead.id, direction="out", status=status, to_addr=to, subject=subject, body=body,
-        step=step, template_id=template_id, campaign_id=campaign_id,
+        step=step, template_id=template_id, campaign_id=campaign_id, language=language,
         experiment_id=experiment_id, edited=edited,
         asset_ids=list(asset_ids or []), file_ids=list(file_ids or []),
         attach_photo_id=attach_photo_id, in_reply_to=in_reply_to, due_at=due_at or now(),
@@ -427,10 +508,10 @@ def schedule_followups(s: Session, lead: Lead, first: Message) -> list[Message]:
         t = s.scalar(select(Template).where(Template.key == f["template"]))
         if t is None or t.archived:
             continue
-        d = draft(s, lead, t)
+        d = draft(s, lead, t, first.language)
         subj = first.subject if first.subject.lower().startswith("re:") else f"Re: {first.subject}"
         out.append(new_outbound(
-            s, lead, subject=subj, body=d["body"], to=first.to_addr, step=i,
+            s, lead, subject=subj, body=d["body"], to=first.to_addr, step=i, language=d["language"],
             template_id=t.id, campaign_id=first.campaign_id,
             attach_photo_id=d["attach_photo_id"] or (first.attach_photo_id if i == 1 else None),
             asset_ids=d["asset_ids"],

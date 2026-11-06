@@ -22,7 +22,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from prospecting import experiments, mailer
+from prospecting import experiments, languages, mailer
 from prospecting.contacts import shared_contacts, usable_emails, usable_phones
 from prospecting.db import (
     Campaign, CampaignLead, Experiment, Lead, Message, Template, now,
@@ -50,6 +50,17 @@ def versions(s: Session, c: Campaign) -> list[Template]:
     ))  # fmt: skip
 
 
+def covered(tpls: list[Template]) -> set[str]:
+    """The languages every version is written in: only leads speaking one of them are
+    written to (a lead must be able to get whichever version it's dealt)."""
+    if not tpls:
+        return {"fr"}
+    out = set(mailer.languages_of(tpls[0]))
+    for t in tpls[1:]:
+        out &= set(mailer.languages_of(t))
+    return out
+
+
 def _busy_elsewhere(s: Session, campaign_id: int | None) -> set[int]:
     """Leads waiting in another running or paused campaign."""
     q = (
@@ -69,7 +80,8 @@ def _started(s: Session) -> set[int]:
     ))  # fmt: skip
 
 
-def why_not(s: Session, lead: Lead, campaign_id: int | None = None) -> str | None:
+def why_not(s: Session, lead: Lead, campaign_id: int | None = None,
+            langs: set[str] | None = None) -> str | None:
     """Why this lead can't be added to a campaign by hand, or None if it can."""
     if lead.do_not_contact:
         return "marked do-not-contact"
@@ -82,6 +94,8 @@ def why_not(s: Session, lead: Lead, campaign_id: int | None = None) -> str | Non
     se, _ = shared_contacts()
     if not usable_emails(lead, se):
         return "no email address of their own"
+    if langs is not None and (lang := languages.of_lead(lead)) not in langs:
+        return f"speaks {languages.LANGUAGES.get(lang, lang)}: the email isn't written in it yet"
     return None
 
 
@@ -187,10 +201,10 @@ def _matches(lead: Lead, f: dict[str, Any], se: set[str], sp: set[str]) -> bool:
 
 def candidates(
     s: Session, kind: str, filters: dict[str, Any], order: str = "small", seed: int = 0,
-    campaign_id: int | None = None, needs_lean: bool = False,
+    campaign_id: int | None = None, needs_lean: bool = False, langs: set[str] | None = None,
 ) -> list[Lead]:  # fmt: skip
     """Every lead the filters let in, never contacted, with an address of their own, in
-    sending order."""
+    sending order. With `langs`, only those whose language is among them."""
     f = filters or {}
     statuses = ("shortlisted",) if f.get("shortlisted") else ("new", "shortlisted")
     q = select(Lead).where(
@@ -226,6 +240,8 @@ def candidates(
             continue
         if not _matches(lead, f, se, sp):
             continue
+        if langs is not None and languages.of_lead(lead) not in langs:
+            continue
         out.append(lead)
     if order == "random":
         out.sort(key=lambda l: l.id)
@@ -242,14 +258,15 @@ def needs_lean(tpls: list[Template]) -> bool:
     return any("{lean}" in (t.subject + t.body) for t in tpls)
 
 
-def hand_picked(s: Session, ids: list[int] | None, campaign_id: int | None = None) -> tuple[list[Lead], list[tuple[Lead, str]]]:
+def hand_picked(s: Session, ids: list[int] | None, campaign_id: int | None = None,
+                langs: set[str] | None = None) -> tuple[list[Lead], list[tuple[Lead, str]]]:
     """Leads added by hand: those that can be contacted, and the others with the reason."""
     ok, blocked = [], []
     for i in ids or []:
         lead = s.get(Lead, i)
         if lead is None:
             continue
-        why = why_not(s, lead, campaign_id)
+        why = why_not(s, lead, campaign_id, langs)
         (blocked.append((lead, why)) if why else ok.append(lead))
     return ok, blocked
 
@@ -265,9 +282,11 @@ def pick(every: list[Lead], hand: list[Lead], size: int, excluded: list[int] | N
 
 def audience(s: Session, c: Campaign) -> tuple[list[Lead], int]:
     """The leads this campaign would contact now, and how many match in all."""
+    tpls = versions(s, c)
+    langs = covered(tpls)
     every = candidates(s, c.kind, c.filters or {}, c.lead_order or "small", seed=c.id or 0,
-                       campaign_id=c.id, needs_lean=needs_lean(versions(s, c)))  # fmt: skip
-    hand, _ = hand_picked(s, c.included, c.id)
+                       campaign_id=c.id, needs_lean=needs_lean(tpls), langs=langs)  # fmt: skip
+    hand, _ = hand_picked(s, c.included, c.id, langs)
     return pick(every, hand, c.size or 0, c.excluded), len(every)
 
 
@@ -275,7 +294,7 @@ def add_specific(s: Session, c: Campaign, lead_ids: list[int]) -> tuple[int, lis
     """Add chosen leads to a campaign. A draft keeps them in its hand-picked list; a
     started campaign hands them a version at once. Returns how many were added and why
     the others weren't."""
-    hand, blocked = hand_picked(s, lead_ids, c.id)
+    hand, blocked = hand_picked(s, lead_ids, c.id, covered(versions(s, c)))
     notes = [f"{l.name}: {why}" for l, why in blocked]
     if c.status == "draft":
         before = set(c.included or [])
@@ -352,7 +371,7 @@ def add_leads(s: Session, c: Campaign, n: int) -> int:
         tpls = [t for t in tpls if t.id == exp.winner_id] or tpls
     have = set(s.scalars(select(CampaignLead.lead_id).where(CampaignLead.campaign_id == c.id)))
     every = candidates(s, c.kind, c.filters or {}, c.lead_order or "small", seed=c.id,
-                       campaign_id=c.id, needs_lean=needs_lean(tpls))  # fmt: skip
+                       campaign_id=c.id, needs_lean=needs_lean(tpls), langs=covered(versions(s, c)))  # fmt: skip
     new = [l for l in every if l.id not in have and l.id not in set(c.excluded or [])][:n]
     top = s.scalar(select(func.max(CampaignLead.rank)).where(CampaignLead.campaign_id == c.id)) or 0
     picks = _deal(len(new), len(tpls), seed=c.id + top)
@@ -375,6 +394,59 @@ def _written(s: Session, c: Campaign) -> dict[int, Message]:
     ):  # fmt: skip
         out.setdefault(m.lead_id, m)
     return out
+
+
+def _why_unwritable(s: Session, row: CampaignLead, lead: Lead, se: set[str]) -> str | None:
+    t = s.get(Template, row.template_id) if row.template_id else None
+    if t is None:
+        return "its email version is gone"
+    if lead.do_not_contact:
+        return "they asked not to be contacted"
+    if not usable_emails(lead, se):
+        return "no email address of their own any more"
+    if lead.last_contacted_at:
+        return "you already wrote to them some other way"
+    if mailer.text_in(t, languages.of_lead(lead)) is None:  # their language changed since
+        return "the email isn't written in their language"
+    return None
+
+
+def _write(s: Session, c: Campaign, row: CampaignLead, lead: Lead) -> Message:
+    """Write this lead's first email from its version, in its language (waiting to be sent)."""
+    t = s.get(Template, row.template_id)
+    d = mailer.draft(s, lead, t)
+    exp = s.get(Experiment, c.experiment_id) if c.experiment_id else None
+    return mailer.new_outbound(
+        s, lead, subject=d["subject"], body=d["body"], template_id=t.id, campaign_id=c.id,
+        attach_photo_id=d["attach_photo_id"], asset_ids=d["asset_ids"], language=d["language"],
+        experiment_id=exp.id if exp and exp.status == "running" else None,
+        status="approved" if c.review == "auto" and mailer.send_mode(s) == "scheduled" else "queued",
+    )  # fmt: skip
+
+
+def email_for(s: Session, c: Campaign, lead_id: int) -> Message:
+    """This lead's first email, ready to read and send by hand: the one already written,
+    or written now."""
+    if c.status not in ("running", "paused", "done"):
+        raise CampaignError("Start the campaign first: that fixes its list of leads.")
+    row = s.scalar(select(CampaignLead).where(CampaignLead.campaign_id == c.id,
+                                              CampaignLead.lead_id == lead_id))  # fmt: skip
+    lead = s.get(Lead, lead_id)
+    if row is None or lead is None:
+        raise CampaignError("This lead isn't in this campaign.")
+    m = _written(s, c).get(lead_id)
+    if m is not None and m.status == "sent":
+        raise CampaignError("Already sent to this lead.")
+    if m is not None:
+        if m.status == "failed":
+            m.status, m.error = "queued", None  # try again
+        return m
+    why = _why_unwritable(s, row, lead, shared_contacts()[0])
+    if why:
+        raise CampaignError(f"Can't write to {lead.name}: {why}.")
+    if c.status == "done":
+        c.status = "running"
+    return _write(s, c, row, lead)
 
 
 def prepare(s: Session, c: Campaign, n: int | None = None) -> int:
@@ -403,20 +475,9 @@ def prepare(s: Session, c: Campaign, n: int | None = None) -> int:
         if row.lead_id in written:
             continue
         lead = s.get(Lead, row.lead_id)
-        t = s.get(Template, row.template_id) if row.template_id else None
-        if lead is None or t is None or lead.do_not_contact or not usable_emails(lead, se):
+        if lead is None or _why_unwritable(s, row, lead, se):
             continue
-        if lead.last_contacted_at:  # you wrote to them some other way meanwhile
-            continue
-        d = mailer.draft(s, lead, t)
-        exp_id = c.experiment_id if c.experiment_id else None
-        exp = s.get(Experiment, exp_id) if exp_id else None
-        mailer.new_outbound(
-            s, lead, subject=d["subject"], body=d["body"], template_id=t.id, campaign_id=c.id,
-            attach_photo_id=d["attach_photo_id"], asset_ids=d["asset_ids"],
-            experiment_id=exp_id if exp and exp.status == "running" else None,
-            status="approved" if c.review == "auto" and mailer.send_mode(s) == "scheduled" else "queued",
-        )  # fmt: skip
+        _write(s, c, row, lead)
         made += 1
     if not made and all(r.lead_id in written for r in rows):
         waiting = any(m.status in ("queued", "approved") for m in written.values())
@@ -544,6 +605,17 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
             "planned": sum(1 for r in rows if r.template_id == t.id),
         })  # fmt: skip
 
+    # Per language: who is in the campaign, who got it, who answered.
+    by_lang: dict[str, dict[str, int]] = defaultdict(lambda: {"leads": 0, "sent": 0, "replied": 0})
+    for r in rows:
+        lead = leads.get(r.lead_id)
+        m = sent.get(r.lead_id)
+        lang = (m.language if m and m.language else None) or (languages.of_lead(lead) if lead else "fr")
+        by_lang[lang]["leads"] += 1
+        if m:
+            by_lang[lang]["sent"] += 1
+            by_lang[lang]["replied"] += 1 if outcome.get(r.lead_id, {}).get("reply") else 0
+
     # Day by day, the last two weeks of this campaign.
     days: dict[str, dict[str, int]] = defaultdict(lambda: {"sent": 0, "replies": 0})
     for m in sent.values():
@@ -557,7 +629,8 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
         span.append({"day": d.isoformat(), **days.get(d.isoformat(), {"sent": 0, "replies": 0})})
         d += timedelta(days=1)
 
-    out: dict[str, Any] = {"totals": totals, "test": test, "versions": per_version, "days": span}
+    out: dict[str, Any] = {"totals": totals, "test": test, "versions": per_version, "days": span,
+                           "languages": dict(sorted(by_lang.items(), key=lambda x: -x[1]["leads"]))}
     left = totals["not_sent"]
     cap = c.daily_cap or 20
     out["days_left"] = -(-left // cap) if left else 0
@@ -582,12 +655,23 @@ def _person(lead: Lead | None) -> str | None:
 
 
 def new_version(s: Session, c: Campaign, name: str, subject: str, body: str,
-                asset_ids: list[int], attach_photo: bool) -> Template:  # fmt: skip
+                asset_ids: list[int], attach_photo: bool, language: str = "fr",
+                translations: dict[str, dict[str, str]] | None = None) -> Template:  # fmt: skip
     t = Template(
         key=f"camp{c.id}_{uuid.uuid4().hex[:8]}", name=name.strip()[:120] or "Version",
         segment=c.kind, step=0, subject=subject, body=body, attach_photo=attach_photo,
-        asset_ids=list(asset_ids), campaign_id=c.id,
+        asset_ids=list(asset_ids), campaign_id=c.id, language=language,
+        translations=clean_translations(translations, language),
     )  # fmt: skip
     s.add(t)
     s.flush()
     return t
+
+
+def clean_translations(tr: dict[str, Any] | None, main: str) -> dict[str, dict[str, str]]:
+    """Known languages only, never the main one, subject and text as strings."""
+    out = {}
+    for lang, x in (tr or {}).items():
+        if lang in languages.LANGUAGES and lang != main and isinstance(x, dict):
+            out[lang] = {"subject": str(x.get("subject") or ""), "body": str(x.get("body") or "")}
+    return out

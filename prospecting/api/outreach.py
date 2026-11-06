@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
-from prospecting import experiments, inbox, mailer, outreach, pilot, worker
+from prospecting import experiments, inbox, languages, mailer, outreach, pilot, worker
 from prospecting.config import settings
 from prospecting.contacts import shared_contacts, usable_emails
 from prospecting.db import (
@@ -27,6 +27,7 @@ from prospecting.db import (
     now,
     session,
 )  # fmt: skip
+from prospecting.languages import LANGUAGES
 from prospecting.mailer import MailError
 from prospecting.outreach import summary
 
@@ -48,6 +49,7 @@ def _msg(m: Message) -> dict[str, Any]:
         "campaign_id": m.campaign_id, "template_id": m.template_id,
         "attach_photo_id": m.attach_photo_id, "experiment_id": m.experiment_id,
         "asset_ids": m.asset_ids or [], "file_ids": m.file_ids or [], "links": m.links or [],
+        "language": m.language,
     }  # fmt: skip
 
 
@@ -163,7 +165,8 @@ def compose(lead_id: int, template_id: int | None = None) -> dict[str, Any]:
             "lead": summary(lead), "mode": mode, "template_id": t.id, "step": step,
             "subject": subject, "body": d["body"], "in_reply_to": in_reply_to,
             "to": best, "to_options": [e["value"] for e in lead.emails or []],
-            "usable": usable_emails(lead, se), "footer": mailer.footer(lead, best or ""),
+            "usable": usable_emails(lead, se), "language": d["language"],
+            "footer": mailer.footer(lead, best or "", d["language"]),
             "photo": {"id": photo.id, "lean": photo.lean_deg,
                       "src": f"/api/photos/{photo.id}/marked.jpg"} if photo else None,
             "attach": bool(d["attach_photo_id"]),
@@ -193,6 +196,7 @@ class SendIn(BaseModel):
     edited: bool | None = None
     asset_ids: list[int] = []
     file_ids: list[int] = []
+    language: str | None = None  # of the text (the footer is written in it)
 
 
 @router.post("/send")
@@ -219,6 +223,7 @@ def send(b: SendIn) -> dict[str, Any]:
             s, lead, subject=b.subject.strip(), body=b.body.strip(), to=b.to.strip().lower(),
             step=step, template_id=b.template_id, attach_photo_id=b.attach_photo_id,
             in_reply_to=b.in_reply_to, status="approved",
+            language=b.language if b.language in LANGUAGES else None,
             experiment_id=exp.id if exp else None, edited=b.edited if step == 0 else None,
             asset_ids=[a for a in b.asset_ids if s.get(Asset, a)],
             file_ids=[f for f in b.file_ids if (x := s.get(LeadFile, f)) and x.lead_id == lead.id],
@@ -388,7 +393,6 @@ def _tpl(t: Template) -> dict[str, Any]:
 @router.get("/templates")
 def templates() -> dict[str, Any]:
     with session() as s:
-        mailer.ensure_templates(s)
         rows = list(
             s.scalars(select(Template).where(Template.campaign_id.is_(None))
                       .order_by(Template.archived, Template.step, Template.id))
@@ -450,6 +454,7 @@ class PreviewIn(BaseModel):
     segment: str = "any"
     asset_ids: list[int] = []
     lead_id: int | None = None
+    language: str | None = None  # the text's language: a lead speaking it fills it in
 
 
 @router.post("/templates/preview")
@@ -460,21 +465,25 @@ def preview_template(p: PreviewIn) -> dict[str, Any]:
         q = select(Lead).where(Lead.do_not_contact.is_(False))
         if p.segment in KINDS:
             q = q.where(Lead.kind == p.segment)
+        if p.language:
+            q = q.where(func.coalesce(Lead.language, "fr") == p.language)
         # A few leads with a first name and their own address, best first.
         choices = [
             l for l in s.scalars(q.order_by(Lead.score.desc()).limit(400))
             if usable_emails(l, se) and mailer.first_name(l)
+            and (p.language is None or languages.of_lead(l) == p.language)
         ][:12]  # fmt: skip
         lead = s.get(Lead, p.lead_id) if p.lead_id else (choices[0] if choices else None)
         if lead is None:
             return {"lead": None, "choices": []}
-        v = mailer.variables(s, lead)
+        lang = p.language or languages.of_lead(lead)
+        v = mailer.variables(s, lead, lang)
         v["nb_images"] = str(len(p.asset_ids))
         to = next(iter(usable_emails(lead, se)), "")
         return {
             "lead": {"id": lead.id, "name": lead.name, "person": outreach.person(lead), "city": lead.city},
             "to": to, "subject": mailer.render(p.subject, v), "body": mailer.render(p.body, v),
-            "footer": mailer.footer(lead, to or ""),
+            "footer": mailer.footer(lead, to or "", lang), "language": lang,
             "choices": [{"id": l.id, "label": f"{l.name} · {mailer.first_name(l)} · {l.city or ''}"}
                         for l in choices],
         }  # fmt: skip
@@ -496,6 +505,7 @@ def get_settings() -> dict[str, Any]:
             "goals": mailer.get_setting(s, "goals", mailer.DEFAULT_GOALS),
             "segment": mailer.get_setting(s, "segment", "photographer"),
             "signature": mailer.get_setting(s, "signature", mailer.DEFAULT_SIGNATURE),
+            "signatures": mailer.get_setting(s, "signatures", {}),
             "followups": mailer.get_setting(s, "followups", mailer.DEFAULT_FOLLOWUPS),
             "send_mode": mailer.send_mode(s),
             "mailbox": mailbox_status(s),
@@ -507,6 +517,7 @@ class SettingsIn(BaseModel):
     goals: dict[str, int] | None = None
     segment: str | None = None
     signature: str | None = None
+    signatures: dict[str, str] | None = None  # in other languages than French
     followups: list[dict[str, Any]] | None = None
     send_mode: str | None = None
 
@@ -519,6 +530,8 @@ def put_settings(b: SettingsIn) -> dict[str, Any]:
                 raise HTTPException(422, "Unknown segment")
             if k == "send_mode" and v not in mailer.SEND_MODES:
                 raise HTTPException(422, "send_mode is manual or scheduled")
+            if k == "signatures":
+                v = {x: t for x, t in v.items() if x in LANGUAGES and x != "fr" and t.strip()}
             mailer.set_setting(s, k, v)
         s.commit()
     return get_settings()

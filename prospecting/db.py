@@ -223,6 +223,10 @@ class Template(Base):
     asset_ids: Mapped[list[int] | None] = mapped_column(JSON, default=list)
     archived: Mapped[bool] = mapped_column(Boolean, default=False)
     campaign_id: Mapped[int | None] = mapped_column(Integer, index=True)  # a campaign's version
+    # The language of subject/body ("fr" when empty), and the same email in other
+    # languages: {"de": {"subject": "...", "body": "..."}}. Each lead gets its own.
+    language: Mapped[str | None] = mapped_column(String(2))
+    translations: Mapped[dict[str, dict[str, str]] | None] = mapped_column(JSON, default=dict)
     updated_at: Mapped[str] = mapped_column(String(32), default=now, onupdate=now)
 
 
@@ -340,6 +344,7 @@ class Message(Base):
     body: Mapped[str] = mapped_column(Text, default="")
     template_id: Mapped[int | None] = mapped_column(Integer)
     campaign_id: Mapped[int | None] = mapped_column(Integer)
+    language: Mapped[str | None] = mapped_column(String(2))  # the language it's written in
     step: Mapped[int] = mapped_column(Integer, default=0)
     attach_photo_id: Mapped[int | None] = mapped_column(Integer)
     asset_ids: Mapped[list[int] | None] = mapped_column(JSON, default=list)  # library images

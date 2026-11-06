@@ -14,15 +14,13 @@ from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 
 from prospecting import enrich, mailer, pilot, scoring, screen, worker
-from prospecting.api.experiments import router as experiments_router
 from prospecting.api.campaigns import router as campaigns_router
+from prospecting.api.experiments import router as experiments_router
 from prospecting.api.labels import router as labels_router
-from prospecting.api.pilot import router as pilot_router
 from prospecting.api.outreach import router as outreach_router
+from prospecting.api.pilot import router as pilot_router
 from prospecting.api.writer import router as writer_router
 from prospecting.config import settings
-from prospecting.countries import COUNTRIES
-from prospecting.languages import LANGUAGES
 from prospecting.contacts import (
     email_problem,
     flags,
@@ -31,7 +29,9 @@ from prospecting.contacts import (
     usable_emails,
     usable_phones,
 )  # fmt: skip
+from prospecting.countries import COUNTRIES
 from prospecting.db import ACTIVITY_KINDS, KINDS, STATUSES, Activity, Lead, Message, Photo, session
+from prospecting.languages import LANGUAGES
 from prospecting.outreach import SMALL_NEW, summary
 from prospecting.scoring import HEADCOUNT_LABELS
 from prospecting.text import NOT_OWN_SITE, domain_in
@@ -41,8 +41,6 @@ STATIC = Path(__file__).with_name("static")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    with session() as s:
-        mailer.ensure_templates(s)
     if settings.run_worker:
         worker.start()
     yield

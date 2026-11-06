@@ -27,8 +27,18 @@ from prospecting.mailer import cancel_pending, iso, local
 
 STATUS: dict[str, Any] = {"last_poll": None, "last_error": None}
 _STOP = re.compile(
-    r"^\s*(stop\b|désinscri|desinscri|unsubscribe|ne plus (me )?(contacter|écrire)|"
-    r"retirez[- ]moi|merci de ne plus)",
+    r"^\s*(stopp?\b|désinscri|desinscri|unsubscribe|ne plus (me )?(contacter|écrire)|"
+    r"retirez[- ]moi|merci de ne plus|"
+    r"remove me|please (don't|do not) (contact|email|write)|no more emails|"  # English
+    r"abmelden|austragen|bitte keine|"  # German
+    r"afmelden|uitschrijven|niet meer (mailen|contacteren)|"  # Dutch
+    r"disiscriv|cancellami|non (mi )?(scriva|contatt)|"  # Italian
+    r"baja\b|darme de baja|no me (escriba|contacte)|"  # Spanish
+    r"cancelar|não (me )?(contact|escrev)|"  # Portuguese
+    r"avregistrera|afmeld|avmeld|avslutt|"  # Swedish, Danish, Norwegian
+    r"älä lähetä|peru tilaus|"  # Finnish
+    r"wypisz|proszę nie (pisać|kontaktować)|"  # Polish
+    r"odhlásit|odhlaste|nepište)",  # Czech
     re.IGNORECASE,
 )
 _QUOTE_START = re.compile(

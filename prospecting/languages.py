@@ -61,6 +61,13 @@ def from_region(country: str | None, postcode: str | None, found_by: str | None 
     return _DEFAULT.get(country, "fr")
 
 
+def of_lead(lead: Lead) -> str:
+    """The language to write to this lead in."""
+    if lead.language in LANGUAGES:
+        return lead.language
+    return from_region(lead.country, lead.postcode, lead.website_source)
+
+
 def from_html_lang(value: str | None, country: str | None) -> str | None:
     """'de-CH' → 'de'. English counts only in Quebec, the UK and Ireland: elsewhere an
     English site is usually a translation, and the owner reads the local language.

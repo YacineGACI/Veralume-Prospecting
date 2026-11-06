@@ -13,12 +13,14 @@ from sqlalchemy import func, select
 
 from prospecting import campaigns as C
 from prospecting import mailer, pilot
+from prospecting.api.outreach import _msg as msg_dict
 from prospecting.api.outreach import mailbox_status
 from prospecting.config import settings
 from prospecting.db import (
     KINDS, Asset, Campaign, CampaignLead, Dossier, Experiment, Lead, Message, Template, now,
     session,
 )  # fmt: skip
+from prospecting.languages import LANGUAGES, of_lead
 from prospecting.mailer import MailError
 from prospecting.outreach import summary
 
@@ -34,7 +36,8 @@ def _get(s, campaign_id: int) -> Campaign:
 
 def _version(t: Template, i: int) -> dict[str, Any]:
     return {"id": t.id, "letter": C._letter(i), "name": t.name, "subject": t.subject,
-            "body": t.body, "asset_ids": t.asset_ids or [], "attach_photo": t.attach_photo}  # fmt: skip
+            "body": t.body, "asset_ids": t.asset_ids or [], "attach_photo": t.attach_photo,
+            "language": t.language or "fr", "translations": t.translations or {}}  # fmt: skip
 
 
 def _config(s, c: Campaign) -> dict[str, Any]:
@@ -84,6 +87,7 @@ class AudienceIn(BaseModel):
     included: list[int] = []
     campaign_id: int | None = None
     needs_lean: bool = False
+    languages: list[str] | None = None  # those every version is written in (None: all)
     shown: int = 25  # how many of the chosen leads to list
 
 
@@ -99,9 +103,12 @@ def audience(b: AudienceIn) -> dict[str, Any]:
     if b.kind not in KINDS:
         raise HTTPException(422, "Unknown segment")
     with session() as s:
-        every = C.candidates(s, b.kind, b.filters, b.order, seed=b.campaign_id or 0,
-                             campaign_id=b.campaign_id, needs_lean=b.needs_lean)  # fmt: skip
-        hand, blocked = C.hand_picked(s, b.included, b.campaign_id)
+        everyone = C.candidates(s, b.kind, b.filters, b.order, seed=b.campaign_id or 0,
+                                campaign_id=b.campaign_id, needs_lean=b.needs_lean)  # fmt: skip
+        langs = set(b.languages) if b.languages is not None else None
+        lang_of = {l.id: of_lead(l) for l in everyone}
+        every = [l for l in everyone if langs is None or lang_of[l.id] in langs]
+        hand, blocked = C.hand_picked(s, b.included, b.campaign_id, langs)
         chosen = C.pick(every, hand, b.size, b.excluded)
         gone = set(b.excluded)
         n_dep = Counter((l.postcode or "")[:2] for l in every if l.postcode and (l.country or "FR") == "FR")
@@ -113,6 +120,10 @@ def audience(b: AudienceIn) -> dict[str, Any]:
             "excluded": [summary(l) for l in every if l.id in gone][:50],
             "blocked": [{**summary(l), "why": why} for l, why in blocked],
             "deps": deps, "facets": C.facets(s, every),
+            # Every lead the filters let in, by language, and those whose language no
+            # text covers yet (left out until it's written).
+            "by_language": dict(Counter(lang_of.values()).most_common()),
+            "left_out": dict(Counter(lang_of[l.id] for l in everyone if l.id not in {x.id for x in every}).most_common()),
         }  # fmt: skip
 
 
@@ -173,6 +184,8 @@ class VersionIn(BaseModel):
     body: str = ""
     asset_ids: list[int] = []
     attach_photo: bool = False
+    language: str = "fr"  # of subject and body
+    translations: dict[str, dict[str, str]] = {}
 
 
 class CampaignIn(BaseModel):
@@ -242,11 +255,16 @@ def _apply(s, c: Campaign, b: CampaignIn) -> None:
         keep = set()
         for v in b.versions:
             t = have.get(v.id) if v.id else None
+            if v.language not in LANGUAGES:
+                raise HTTPException(422, "Unknown language")
             if t is None:
-                t = C.new_version(s, c, v.name, v.subject, v.body, v.asset_ids, v.attach_photo)
+                t = C.new_version(s, c, v.name, v.subject, v.body, v.asset_ids, v.attach_photo,
+                                  v.language, v.translations)  # fmt: skip
             else:
                 t.name, t.subject, t.body = v.name.strip()[:120] or "Version", v.subject, v.body
                 t.asset_ids, t.attach_photo, t.segment = list(v.asset_ids), v.attach_photo, c.kind
+                t.language = v.language
+                t.translations = C.clean_translations(v.translations, v.language)
             keep.add(t.id)
         for tid, t in have.items():
             if tid not in keep:
@@ -319,7 +337,8 @@ def duplicate(campaign_id: int) -> dict[str, Any]:
         s.add(d)
         s.flush()
         for t in C.versions(s, c):
-            C.new_version(s, d, t.name, t.subject, t.body, list(t.asset_ids or []), t.attach_photo)
+            C.new_version(s, d, t.name, t.subject, t.body, list(t.asset_ids or []), t.attach_photo,
+                          t.language or "fr", dict(t.translations or {}))  # fmt: skip
         s.commit()
         return _config(s, d)
 
@@ -408,8 +427,22 @@ def write_now(campaign_id: int) -> dict[str, Any]:
         return {"written": n}
 
 
+@router.post("/campaigns/{campaign_id}/leads/{lead_id}/email")
+def email_for_lead(campaign_id: int, lead_id: int) -> dict[str, Any]:
+    """The lead's email, written if it isn't yet, to read and send from the campaign page."""
+    with session() as s:
+        c = _get(s, campaign_id)
+        try:
+            m = C.email_for(s, c, lead_id)
+        except C.CampaignError as e:
+            raise HTTPException(409, str(e)) from e
+        s.commit()
+        return {"lead": summary(s.get(Lead, lead_id)), "message": msg_dict(m)}
+
+
 class TestIn(BaseModel):
     versions: list[VersionIn] | None = None  # unsaved edits; default: the saved ones
+    language: str | None = None  # the language to test (default: each version's main one)
 
 
 @router.post("/campaigns/{campaign_id}/test")
@@ -420,7 +453,8 @@ def send_test(campaign_id: int, b: TestIn) -> dict[str, Any]:
     with session() as s:
         c = _get(s, campaign_id)
         leads, _ = C.audience(s, c) if c.status == "draft" else (None, 0)
-        lead = (leads or [None])[0]
+        lead = next((l for l in leads or [] if b.language and of_lead(l) == b.language), None)
+        lead = lead or (leads or [None])[0]
         if lead is None:
             row = s.scalars(select(CampaignLead).where(CampaignLead.campaign_id == c.id)
                             .order_by(CampaignLead.rank)).first()  # fmt: skip
@@ -432,9 +466,11 @@ def send_test(campaign_id: int, b: TestIn) -> dict[str, Any]:
         sent = 0
         for i, v in enumerate(vs):
             t = Template(key="test", name=v.name, segment=c.kind, step=0, subject=v.subject, body=v.body,
-                         attach_photo=v.attach_photo, asset_ids=list(v.asset_ids))  # fmt: skip
-            d = mailer.draft(s, lead, t)
+                         attach_photo=v.attach_photo, asset_ids=list(v.asset_ids), language=v.language,
+                         translations=C.clean_translations(v.translations, v.language))  # fmt: skip
+            d = mailer.draft(s, lead, t, b.language or v.language)
             msg = Message(lead_id=lead.id, direction="out", status="test", to_addr=settings.sender,
+                          language=d["language"],
                           subject=f"[Test {C._letter(i)} · {lead.name}] {d['subject']}", body=d["body"],
                           step=0, attach_photo_id=d["attach_photo_id"], asset_ids=d["asset_ids"])  # fmt: skip
             try:

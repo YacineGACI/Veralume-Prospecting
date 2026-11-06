@@ -553,7 +553,7 @@ export async function openComposer(leadId, templateId = null, { fileIds = null }
     in_reply_to: c.in_reply_to, step: c.step, followups: sheet.querySelector("#cp-fu")?.checked ?? false, when: whenTo,
     experiment_id: c.test?.in_test && !sendingBack ? c.test.id : null,
     edited: sheet.querySelector("#cp-subject").value !== c.subject || sheet.querySelector("#cp-body").value !== c.body,
-    asset_ids: checked("asset"), file_ids: checked("file"),
+    asset_ids: checked("asset"), file_ids: checked("file"), language: c.language || null,
   });
   wireAiBar(sheet.querySelector(".ai-bar"), {
     subject: sheet.querySelector("#cp-subject"), body: sheet.querySelector("#cp-body"),
@@ -618,7 +618,7 @@ export async function openReview(messageId, item = null, { manual = null, next =
       <div class="small muted">${esc(l.name)} · ${esc(l.city || "")} · ${pill(l.status)} ${m.error && m.status === "failed" ? `<span class="flag">${esc(m.error)}</span>` : ""}</div>
       <div class="field"><span class="k">To</span><input id="rv-to" value="${esc(m.to || "")}" aria-label="To"></div>
       <div class="field"><span class="k">Subject</span><input id="rv-subject" value="${esc(m.subject)}" aria-label="Subject"></div>
-      <textarea class="input mailbody" id="rv-body" aria-label="Message" lang="fr" autofocus>${esc(m.body)}</textarea>
+      <textarea class="input mailbody" id="rv-body" aria-label="Message" lang="${m.language || "fr"}" autofocus>${esc(m.body)}</textarea>
       ${atts.length ? `<div class="rv-atts"><span class="small muted">${atts.length} attachment${atts.length > 1 ? "s" : ""}</span>${atts.join("")}</div>` : ""}
       <div class="row"><button class="btn ghost danger" data-cancel-msg>Don't send</button><button class="btn ghost" data-open-lead>Open lead file</button><span class="grow"></span>
         ${next && left ? `<button class="btn ghost" data-skip-next>Later</button>` : ""}
