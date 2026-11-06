@@ -1,7 +1,7 @@
 // The views. Each one renders into the canvas and may handle its own keys.
 import {
   $, $$, aiBar, api, at, av, busy, changed, closeModal, confetti, dayName, esc, fail, firstName, I,
-  COUNTRY, flag, idChips, kindIcon, KINDS_PL, LABELS, labelChip, labelChips, labelEditor, leanChip, leanCol, leanTxt, loadLabels, manageLabels, openModal, pill, ring, scoreCls, small, SMALL_NEW, STAGES, STATUS,
+  COUNTRY, flag, idChips, LANG, kindIcon, KINDS_PL, LABELS, labelChip, labelChips, labelEditor, leanChip, leanCol, leanTxt, loadLabels, manageLabels, openModal, pill, ring, scoreCls, small, SMALL_NEW, STAGES, STATUS,
   STEP, store, telHref, toast, toLocalInput, fromLocalInput, tomorrowAt, when, wireAiBar,
 } from "./core.js";
 import { callLead, openComposer, openLead, openReview } from "./lead.js";
@@ -134,6 +134,7 @@ export const leads = {
     if (q.min_lean) p.set("min_lean", "3");
     if (q.needs_check) p.set("needs_check", "true");
     if (q.country) p.set("country", q.country);
+    if (q.language) p.set("language", q.language);
     if (q.dep && (!q.country || q.country === "FR")) p.set("dep", q.dep);
     if (q.label) p.set("label", q.label);
     return p;
@@ -168,6 +169,7 @@ export const leads = {
         ${chip("small_first", "New or small first", q.small_first)}${chip("measured", "Photos measured", q.measured)}${chip("min_lean", "Lean ≥ 3°", q.min_lean)}${chip("needs_check", "Contact to fix", q.needs_check)}
         <span class="grow"></span>
         <select class="select" id="lcountry" aria-label="Country" style="padding:4px 8px"><option value="">All countries</option>${Object.keys(COUNTRY).filter((c) => m.by_country?.[c]?.[q.kind]).map((c) => `<option value="${c}" ${c === q.country ? "selected" : ""}>${esc(COUNTRY[c])} · ${m.by_country[c][q.kind].toLocaleString("en")}</option>`).join("")}</select>
+        ${Object.keys(m.by_language || {}).length > 1 ? `<select class="select" id="llang" aria-label="Language" style="padding:4px 8px"><option value="">All languages</option>${Object.keys(LANG).filter((x) => m.by_language[x]?.[q.kind]).map((x) => `<option value="${x}" ${x === q.language ? "selected" : ""}>${esc(LANG[x])} · ${m.by_language[x][q.kind].toLocaleString("en")}</option>`).join("")}</select>` : ""}
         ${!q.country || q.country === "FR" ? `<select class="select" id="ldep" aria-label="Département" style="padding:4px 8px"><option value="">All départements</option>${m.departements.map((d) => `<option ${d === q.dep ? "selected" : ""}>${esc(d)}</option>`).join("")}</select>` : ""}
         <select class="select" id="lsort" aria-label="Sort" style="padding:4px 8px">${[["score", "Best score"], ["lean", "Most lean"], ["distance", "Nearest to Strasbourg"], ["contacted", "Last contacted"], ["updated", "Recently changed"], ["name", "Name"]].map(([v, t]) => `<option value="${v}" ${v === q.sort ? "selected" : ""}>${t}</option>`).join("")}</select>
       </div>
@@ -180,6 +182,7 @@ export const leads = {
     let timer;
     $("#lq").oninput = (e) => { clearTimeout(timer); timer = setTimeout(() => { this.qs.q = e.target.value.trim(); this.render().then(() => { const i = $("#lq"); i.focus(); i.setSelectionRange(i.value.length, i.value.length); }); }, 300); };
     $("#lcountry").onchange = (e) => { this.qs.country = e.target.value; if (this.qs.country && this.qs.country !== "FR") this.qs.dep = ""; this.render(); };
+    if ($("#llang")) $("#llang").onchange = (e) => { this.qs.language = e.target.value; this.render(); };
     if ($("#ldep")) $("#ldep").onchange = (e) => { this.qs.dep = e.target.value; this.render(); };
     $("#lsort").onchange = (e) => { this.qs.sort = e.target.value; this.render(); };
     $("#selall").onchange = (e) => { this.items.forEach((l) => (e.target.checked ? this.sel.add(l.id) : this.sel.delete(l.id))); this.draw(); };
@@ -193,7 +196,7 @@ export const leads = {
       <td><span class="score ${scoreCls(l.score)}">${l.score}</span></td>
       <td class="who"><div class="row" style="gap:12px;flex-wrap:nowrap;align-items:flex-start">${av(l)}<div style="min-width:0"><b>${esc(l.person || l.name)}</b>${l.person ? `<span class="bn">${esc(l.name)}</span>` : ""}
         <div class="idrow">${labelChips(l)}${idChips(l)}${l.flags.map((f) => `<span class="flag">${esc(f)}</span>`).join("")}</div></div></div></td>
-      <td>${flag(l.country)} ${esc(l.city || "–")} ${l.dep ? `<span class="tag">${esc(l.dep)}</span>` : ""}${l.country && l.country !== "FR" ? `<div class="small muted">${esc(COUNTRY[l.country] || l.country)}</div>` : ""}${l.id_?.dep_name ? `<div class="small muted">${esc(l.id_.dep_name)}${l.distance_km != null && l.distance_km < 60 ? ` · ${Math.round(l.distance_km)} km` : ""}</div>` : ""}</td>
+      <td>${flag(l.country)} ${esc(l.city || "–")} ${l.dep ? `<span class="tag">${esc(l.dep)}</span>` : ""}${(l.country && l.country !== "FR") || (l.language && l.language !== "fr") ? `<div class="small muted">${l.country && l.country !== "FR" ? `${esc(COUNTRY[l.country] || l.country)} · ` : ""}${esc(LANG[l.language] || l.language || "French")}</div>` : ""}${l.id_?.dep_name ? `<div class="small muted">${esc(l.id_.dep_name)}${l.distance_km != null && l.distance_km < 60 ? ` · ${Math.round(l.distance_km)} km` : ""}</div>` : ""}</td>
       <td><span class="ci"><span class="${mail}" title="${mail === "y" ? "Their email" : mail === "x" ? "Email found, but not theirs" : "No email"}">${I.mail}</span><span class="${tel}" title="${tel === "y" ? "Their phone" : tel === "x" ? "Phone found, but a switchboard" : "No phone"}">${I.tel}</span><span class="${l.website ? "y" : ""}" title="${l.website ? "Website" : "No website"}">${I.web}</span></span></td>
       <td><span class="leanbar"><span class="tr"><span style="width:${l.lean_median == null ? 0 : Math.min((l.lean_median / 8) * 100, 100)}%;background:${leanCol(l.lean_median)}"></span></span><span class="num small">${leanTxt(l.lean_median)}</span></span></td>
       <td>${pill(l.status)}</td>

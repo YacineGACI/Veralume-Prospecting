@@ -73,6 +73,9 @@ class Lead(Base):
 
     # ISO code (FR, BE, LU, CH, DE; CA is Quebec). See countries.py.
     country: Mapped[str | None] = mapped_column(String(2), default="FR", index=True)
+    # The language to write to them in (fr de nl it en), and who said so: you | site | region.
+    language: Mapped[str | None] = mapped_column(String(2), index=True)
+    language_source: Mapped[str | None] = mapped_column(String(8))
     address: Mapped[str | None] = mapped_column(String(300))
     postcode: Mapped[str | None] = mapped_column(String(10))
     city: Mapped[str | None] = mapped_column(String(120), index=True)
@@ -403,6 +406,11 @@ def _migrate() -> None:
                     if (table.name, col.name) == ("leads", "country"):
                         # Leads before 2026-11-06 all came from French sources.
                         c.exec_driver_sql("UPDATE leads SET country = 'FR'")
+                    if (table.name, col.name) == ("leads", "language_source"):
+                        c.exec_driver_sql(
+                            "UPDATE leads SET language = 'fr', language_source = 'region' "
+                            "WHERE COALESCE(country, 'FR') = 'FR'"
+                        )
 
 
 _migrate()

@@ -31,6 +31,7 @@ from prospecting.config import settings
 from prospecting.countries import COUNTRIES
 from prospecting.db import Lead, Photo, now, session
 from prospecting.http import Fetcher, Page
+from prospecting.languages import from_html_lang, from_region
 from prospecting.leads import distance_from_center
 from prospecting.text import (
     NOT_OWN_SITE,
@@ -119,6 +120,7 @@ class Findings:
     tags: set[str] = field(default_factory=set)
     listings_seen: int = 0
     photos: list[tuple[str, str]] = field(default_factory=list)
+    html_lang: str | None = None  # <html lang="…"> of the home page
     # (town, postcode, lat, lon), found on the site for leads without an address.
     location: tuple[str, str, float, float] | None = None
 
@@ -313,6 +315,8 @@ def read_site(lead: LeadView, site: str, fetcher: Fetcher, f: Findings) -> None:
         return
     site = home.final_url
     f.network = network_of(site, lead.name)
+    root = HTMLParser(home.text).css_first("html")
+    f.html_lang = (root.attributes.get("lang") or root.attributes.get("xml:lang")) if root else None
     links = [u for u in _links(home) if _same_site(u, site)]
     for u in _links(home):
         if d := domain_in(u, SOCIAL):
@@ -487,6 +491,12 @@ def apply(f: Findings) -> None:
             lead.website, lead.website_source = f.website, f.website_source
             lead.add_source("website", f.website)
         lead.network = lead.network or f.network
+        if lead.language_source != "you":
+            if site_lang := from_html_lang(f.html_lang, lead.country):
+                lead.language, lead.language_source = site_lang, "site"
+            elif not lead.language:
+                lead.language = from_region(lead.country, lead.postcode, lead.website_source)
+                lead.language_source = "region"
         if f.location and not lead.postcode:
             lead.city, lead.postcode, lead.lat, lead.lon = f.location
             lead.distance_km = distance_from_center(lead.lat, lead.lon)

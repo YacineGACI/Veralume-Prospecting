@@ -839,3 +839,5 @@ pre.env{font:12.5px var(--mono);background:var(--bg);border:1px solid var(--line
 .cf-CH{width:11px;background:linear-gradient(#fff,#fff) center/62% 22% no-repeat,linear-gradient(#fff,#fff) center/22% 62% no-repeat,#da291c}
 .cf-CA{background:linear-gradient(#fff,#fff) center/100% 18% no-repeat,linear-gradient(#fff,#fff) 44% 50%/12% 100% no-repeat,#003da5}
 .idc.ctry{gap:5px}
+.langsel{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--text2);margin-left:6px}
+.langsel select{font:inherit;padding:1px 4px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--text)}

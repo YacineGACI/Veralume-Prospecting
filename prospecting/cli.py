@@ -7,7 +7,7 @@ from typing import Annotated
 import typer
 from sqlalchemy import func, select
 
-from prospecting import enrich, scoring, screen
+from prospecting import enrich, languages, scoring, screen
 from prospecting.areas import RINGS
 from prospecting.db import Lead, SearchQuery, session
 from prospecting.sources import abroad as abroad_src
@@ -168,7 +168,19 @@ def abroad(
             if not finished:
                 typer.echo("DuckDuckGo wants a captcha: rerun `prospect abroad` in an hour or two")
                 break
+    languages.fill()
+    languages.read_sites()
     _country_stats()
+
+
+@app.command("languages")
+def languages_cmd(
+    sites: Annotated[bool, typer.Option(help="Also read the language of sites abroad")] = True,
+) -> None:
+    """Give every lead the language to write to them in (from the region, then the site)."""
+    languages.fill()
+    if sites:
+        languages.read_sites()
 
 
 def _read_then_prune() -> None:

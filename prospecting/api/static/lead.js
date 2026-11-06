@@ -2,7 +2,7 @@
 // our retouched versions, the pilot's steps, notes), the email composer, and the review
 // dialog for written emails.
 import {
-  $, aiBar, api, at, av, busy, changed, closeModal, confetti, COUNTRY, esc, fail, flag, host, I, idChips, KIND, LABELS, labelChip, labelEditor, leanTxt, loadLabels,
+  $, aiBar, api, at, av, busy, changed, closeModal, confetti, COUNTRY, esc, fail, flag, host, I, idChips, LANG, KIND, LABELS, labelChip, labelEditor, leanTxt, loadLabels,
   lightbox, openModal, pill, safeUrl, small, SMALL_NEW, STAGES, STATUS, STEP, store, telHref,
   toast, toLocalInput, fromLocalInput, tomorrowAt, when, wireAiBar,
 } from "./core.js";
@@ -37,6 +37,11 @@ async function reload() {
     renderLead();
   }
 }
+document.addEventListener("change", (e) => {
+  if (!e.target.matches?.("[data-lead-lang]") || !drawer.lead) return;
+  const before = drawer.lead.language || "fr";
+  patch({ language: e.target.value }, `They'll be written to in ${LANG[e.target.value]}`, { language: before }).catch(fail);
+});
 async function patch(body, msg, undoBody) {
   const id = drawer.lead.id;
   drawer.lead = await api(`/api/leads/${id}`, { method: "PATCH", body });
@@ -267,6 +272,7 @@ function renderLead() {
     <div class="row">${av(l, "lg")}<div style="flex:1;min-width:0"><h3>${esc(who(l))}</h3>
       <div class="meta">${l.person ? `${esc(l.name)} · ` : ""}${esc(KIND[l.kind] || l.kind)} · ${flag(l.country)} ${esc(l.city || "town unknown")}${l.country && l.country !== "FR" ? `, ${esc(COUNTRY[l.country] || l.country)}` : ""}${l.dep ? ` <span class="tag">${esc(l.dep)}</span>` : ""}${l.id_?.dep_name ? ` ${esc(l.id_.dep_name)}` : ""}${l.distance_km != null ? ` · ${Math.round(l.distance_km)} km` : ""} ${pill(l.status)} ${l.do_not_contact ? `<span class="flag">do not contact</span>` : ""}</div>
       <div class="idrow">${(l.labels || []).map((id) => LABELS.byId[id]).filter(Boolean).map((x) => `<button class="lab c-${esc(x.color)}" data-lab-off="${x.id}" aria-label="Remove the tag ${esc(x.name)}"><i></i>${esc(x.name)} ×</button>`).join("")}<button class="chip" data-lab-add style="padding:0 9px;font-size:12px">+ tag</button>
+        <label class="langsel" title="${l.language_source === "you" ? "You chose it" : l.language_source === "site" ? "Their website is in this language" : "Guessed from where they are"}">Write in <select data-lead-lang aria-label="Language to write to them in">${Object.entries(LANG).map(([k, v]) => `<option value="${k}" ${k === (l.language || "fr") ? "selected" : ""}>${v}</option>`).join("")}</select>${l.language_source === "you" ? "" : `<span class="dim">${l.language_source === "site" ? " · from their site" : " · guessed"}</span>`}</label>
         ${idChips(l, { max: 99 })}${sn ? ` ${sn}` : ""}</div>
       <div class="labmenu" data-lab-menu hidden></div></div>
       <div class="acts-row">

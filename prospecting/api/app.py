@@ -22,6 +22,7 @@ from prospecting.api.outreach import router as outreach_router
 from prospecting.api.writer import router as writer_router
 from prospecting.config import settings
 from prospecting.countries import COUNTRIES
+from prospecting.languages import LANGUAGES
 from prospecting.contacts import (
     email_problem,
     flags,
@@ -119,10 +120,13 @@ def meta() -> dict[str, Any]:
     with session() as s:
         rows = s.execute(
             select(Lead.kind, Lead.emails, Lead.phones, Lead.do_not_contact, Lead.postcode,
-                   Lead.country)
+                   Lead.country, Lead.language)
         )
+        by_language: dict[str, dict[str, int]] = {}
         by_country: dict[str, dict[str, int]] = {}
-        for kind, emails, phones, dnc, pc, country in rows:
+        for kind, emails, phones, dnc, pc, country, lang in rows:
+            bl = by_language.setdefault(lang or "fr", {})
+            bl[kind] = bl.get(kind, 0) + 1
             k = by_kind.setdefault(kind, {"total": 0, "email": 0, "phone": 0})
             k["total"] += 1
             country = country or "FR"
@@ -142,6 +146,7 @@ def meta() -> dict[str, Any]:
         "by_kind": by_kind, "by_status": {st: by_status.get(st, 0) for st in (*STATUSES, "lost")},
         "total": sum(v["total"] for v in by_kind.values()), "departements": sorted(deps),
         "center": settings.center_name, "by_country": by_country,
+        "by_language": by_language, "languages": LANGUAGES,
         "countries": {c.code: c.name for c in COUNTRIES.values()},
     }  # fmt: skip
 
@@ -161,7 +166,7 @@ def leads(
     q: str = "", kind: str = "", status: str = "", city: str = "", dep: str = "",
     reach: str = "", contacted: str = "", measured: bool = False, min_lean: float | None = None,
     needs_check: bool = False, small_first: bool = False, hide_dnc: bool = True, label: int | None = None,
-    country: str = "",
+    country: str = "", language: str = "",
     sort: str = "score", offset: int = 0, limit: int = 100,
 ) -> dict[str, Any]:  # fmt: skip
     shared = shared_contacts()
@@ -183,6 +188,8 @@ def leads(
             stmt = stmt.where(Lead.city == city)
         if country:
             stmt = stmt.where(func.coalesce(Lead.country, "FR") == country)
+        if language:
+            stmt = stmt.where(func.coalesce(Lead.language, "fr") == language)
         if dep:
             stmt = stmt.where(func.coalesce(Lead.country, "FR") == "FR", Lead.postcode.startswith(dep))
         if measured:
@@ -232,6 +239,7 @@ class LeadPatch(BaseModel):
     next_action_at: str | None = None
     snoozed_until: str | None = None
     clear_next_action: bool = False
+    language: str | None = None
 
 
 def _apply(s, l: Lead, patch: LeadPatch) -> None:
@@ -246,6 +254,10 @@ def _apply(s, l: Lead, patch: LeadPatch) -> None:
             pilot.set_stage(s, l, None)  # moved back before the pilot: it leaves the pilots board
         if patch.status in ("lost", "customer", "replied", "interview", "pilot"):
             mailer.cancel_pending(s, l.id, f"moved to {patch.status}")
+    if patch.language is not None:
+        if patch.language not in LANGUAGES:
+            raise HTTPException(422, "Unknown language")
+        l.language, l.language_source = patch.language, "you"
     if patch.kind and patch.kind in KINDS:
         l.kind = patch.kind
     if patch.name:

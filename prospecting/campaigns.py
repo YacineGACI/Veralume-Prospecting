@@ -112,6 +112,7 @@ def facets(s: Session, leads: list[Lead]) -> dict[str, Any]:
         "networks": [{"name": k, "n": n} for k, n in nets.most_common(20)],
         "labels": dict(Counter(x for l in leads for x in set(l.labels or []))),
         "countries": dict(Counter(l.country or "FR" for l in leads)),
+        "languages": dict(Counter(l.language or "fr" for l in leads)),
     }  # fmt: skip
 
 
@@ -198,6 +199,8 @@ def candidates(
     )  # fmt: skip
     if f.get("countries"):
         q = q.where(func.coalesce(Lead.country, "FR").in_([str(c) for c in f["countries"]]))
+    if f.get("languages"):
+        q = q.where(func.coalesce(Lead.language, "fr").in_([str(x) for x in f["languages"]]))
     if f.get("deps"):  # French départements: a German 67xxx postcode is not the Bas-Rhin
         q = q.where(func.coalesce(Lead.country, "FR") == "FR",
                     or_(*[Lead.postcode.startswith(str(d)) for d in f["deps"]]))

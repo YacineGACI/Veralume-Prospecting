@@ -1,7 +1,7 @@
 // Campaigns: the list, one campaign (a three-step builder while it's a draft, its results
 // once started) and dossiers (reusable sets of images).
 import {
-  $, aiBar, api, busy, changed, closeModal, confetti, COUNTRY, esc, fail, flag, I, idChips, kindIcon, KINDS_PL, LABELS, labelChips, openModal,
+  $, aiBar, api, busy, changed, closeModal, confetti, COUNTRY, esc, fail, flag, I, LANG, idChips, kindIcon, KINDS_PL, LABELS, labelChips, openModal,
   small, toast, when, wireAiBar,
 } from "./core.js";
 import { openLead } from "./lead.js";
@@ -219,6 +219,7 @@ function activeFilters(f) {
   (f.labels_any || []).forEach((id) => out.push([`tagged ${LABELS.byId[id]?.name || "?"}`, "labels_any", id]));
   (f.labels_none || []).forEach((id) => out.push([`not tagged ${LABELS.byId[id]?.name || "?"}`, "labels_none", id]));
   (f.countries || []).forEach((c) => out.push([`in ${COUNTRY[c] || c}`, "countries", c]));
+  (f.languages || []).forEach((x) => out.push([`speaks ${LANG[x] || x}`, "languages", x]));
   (f.deps || []).forEach((d) => out.push([`in ${d}`, "deps", d]));
   (f.networks || []).forEach((n) => out.push([n, "networks", n]));
   if (f.network === "independent") out.push(["independent (no network)", "network"]);
@@ -276,6 +277,7 @@ function stepWho() {
           <label class="fchip sel ftext">town <input id="f-town" data-ftext="town" value="${esc(f.town || "")}" placeholder="e.g. Colmar" autocomplete="off"></label>
         </div>
         ${Object.keys(fa.countries || {}).length > 1 || (f.countries || []).length ? `<div class="chips"><span class="small muted">Country</span>${Object.keys(COUNTRY).filter((c) => fa.countries?.[c] || (f.countries || []).includes(c)).map((c) => chip(`${flag(c)} ${esc(COUNTRY[c])}`, `data-flist="countries" data-fval="${c}"`, (f.countries || []).includes(c), (f.countries || []).length ? null : fa.countries?.[c])).join("")}</div>` : ""}
+        ${Object.keys(fa.languages || {}).length > 1 || (f.languages || []).length ? `<div class="chips"><span class="small muted">Language</span>${Object.keys(LANG).filter((x) => fa.languages?.[x] || (f.languages || []).includes(x)).map((x) => chip(esc(LANG[x]), `data-flist="languages" data-fval="${x}"`, (f.languages || []).includes(x), (f.languages || []).length ? null : fa.languages?.[x])).join("")}</div>` : ""}
         ${opts.length > 1 || (f.deps || []).length ? `<div class="chips"><span class="small muted">Département</span>${shownDeps.map((d) => chip(esc(d), `data-dep="${esc(d)}"`, (f.deps || []).includes(d), (f.deps || []).length ? null : depN(d))).join("")}
           ${rest.length ? `<select class="dep-more" data-dep-add aria-label="Another département"><option value="">+ another (${rest.length})</option>${rest.map((x) => `<option value="${esc(x.dep)}">${esc(x.dep)} · ${x.n}</option>`).join("")}</select>` : ""}</div>` : ""}
       </details>

@@ -63,6 +63,8 @@ export const labelChips = (l) => (l.labels || []).map((id) => LABELS.byId[id]).f
 
 /** Countries, in the order we prospect them; "CA" leads are all in Quebec. */
 export const COUNTRY = { FR: "France", BE: "Belgium", LU: "Luxembourg", CH: "Switzerland", DE: "Germany", CA: "Quebec" };
+/** The language to write to a lead in. */
+export const LANG = { fr: "French", de: "German", nl: "Dutch", it: "Italian", en: "English" };
 /** A small drawn flag (emoji flags don't show on Windows). */
 export const flag = (c) => { c = c || "FR"; return `<span class="cflag cf-${esc(c)}" role="img" aria-label="${esc(COUNTRY[c] || c)}" title="${esc(COUNTRY[c] || c)}"></span>`; };
 
@@ -71,7 +73,9 @@ export const flag = (c) => { c = c || "FR"; return `<span class="cflag cf-${esc(
 export function idChips(l, { max = 2, facts = true } = {}) {
   const id = l.id_ || {};
   const c = l.country || id.country;
-  const where = c && c !== "FR" ? [`<span class="idc ctry">${flag(c)} ${esc(COUNTRY[c] || c)}</span>`] : [];
+  const lang = l.language || "fr";
+  const where = (c && c !== "FR") || lang !== "fr"
+    ? [`<span class="idc ctry">${c && c !== "FR" ? `${flag(c)} ${esc(COUNTRY[c] || c)} · ` : ""}${esc(LANG[lang] || lang)}</span>`] : [];
   const f = facts ? (id.facts || []).map((x) => `<span class="idc ${x.k === "network" ? "net" : x.k === "new" ? "new" : ""}">${esc(x.t)}</span>`) : [];
   const sp = (id.specialties || []).slice(0, max).map((x) => `<span class="idc sp sp-${esc(x.tag)}">${esc(x.t)}</span>`);
   return [...where, ...f, ...sp].join("");

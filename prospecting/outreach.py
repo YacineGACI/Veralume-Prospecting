@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from prospecting import mailer
 from prospecting.contacts import flags, mark, shared_contacts, usable_emails, usable_phones
+from prospecting.languages import from_region
 from prospecting.db import (
     CALL_OUTCOMES,
     STATUSES,
@@ -93,6 +94,8 @@ def summary(lead: Lead, shared: tuple[set[str], set[str]] | None = None) -> dict
     return {
         "id": lead.id, "name": lead.name, "person": person(lead), "kind": lead.kind,
         "network": lead.network, "city": lead.city, "country": lead.country or "FR",
+        "language": lead.language or from_region(lead.country, lead.postcode, lead.website_source),
+        "language_source": lead.language_source,
         "dep": ((lead.postcode or "")[:2] or None) if (lead.country or "FR") == "FR" else None,
         "distance_km": lead.distance_km, "website": lead.website,
         "emails": len(lead.emails or []), "phones": len(lead.phones or []),

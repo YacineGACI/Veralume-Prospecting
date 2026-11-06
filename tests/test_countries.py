@@ -92,3 +92,37 @@ def test_addresses_each_country_writes_them():
     for code, (text, pc, town) in cases.items():
         m = COUNTRIES[code].postcode.search(text)
         assert m and m.group("pc") == pc and m.group("town").strip() == town, code
+
+
+def test_language_from_the_region():
+    from prospecting.languages import from_html_lang, from_region
+
+    assert from_region("FR", "67000") == "fr"
+    assert from_region("BE", "9000") == "nl"  # Gent
+    assert from_region("BE", "4000") == "fr"  # Liège
+    assert from_region("BE", "4700") == "de"  # Eupen
+    assert from_region("BE", None, "duckduckgo: vastgoedfotograaf Gent") == "nl"
+    assert from_region("CH", "1201") == "fr" and from_region("CH", "8001") == "de"
+    assert from_region("CH", "6900") == "it"  # Lugano
+    assert from_region("DE", "80331") == "de" and from_region("CA", None) == "fr"
+    assert from_html_lang("de-CH", "CH") == "de"
+    assert from_html_lang("en-US", "DE") is None  # a translation: they read German
+    assert from_html_lang("en", "CA") == "en"  # an English-speaking Montrealer
+
+
+def test_you_choose_the_language_and_filter_on_it(db):
+    from prospecting import enrich
+
+    nl = _lead(db, name="Studio Gent", country="BE", language="nl", language_source="region")
+    fr = _lead(db, name="Studio Namur", country="BE", language="fr", language_source="region")
+    r = client.patch(f"/api/leads/{fr}", json={"language": "de"})
+    assert r.status_code == 200 and r.json()["language"] == "de"
+    assert r.json()["language_source"] == "you"
+    assert client.patch(f"/api/leads/{fr}", json={"language": "xx"}).status_code == 422
+    enrich.apply(enrich.Findings(fr, html_lang="fr-BE"))  # the site never overrides you
+    enrich.apply(enrich.Findings(nl, html_lang="fr-BE"))  # but corrects a guess
+    ids = [x["id"] for x in client.get("/api/leads?kind=photographer&language=de").json()["items"]]
+    assert ids == [fr]
+    with db() as s:
+        got = {l.id: l.language for l in C.candidates(s, "photographer", {"languages": ["fr"]})}
+    assert got == {nl: "fr"}
