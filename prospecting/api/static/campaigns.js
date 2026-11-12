@@ -26,6 +26,66 @@ const coveredLangs = (vs) => vs.reduce((acc, v) => { const mine = vLangs(v).filt
 const langList = (ls) => ls.map((l) => LANG[l] || l).join(", ");
 const usesLean = (vs) => vs.some((v) => `${v.subject} ${v.body}`.includes("{lean}"));
 
+// The follow-ups (automations): 1 after the first email, 2 (the last) after follow-up 1.
+// Each has one text per language ({language, body, translations: {lang: text}}); its
+// subject is always "Re: " + the first email's.
+const FU = {
+  1: { on: "followups_on", days: "followup_days", text: "followup", def: "followup_default", status: "followup_status", d: 7, title: "Follow-up 1 if they don't reply", after: "the first email" },
+  2: { on: "followup2_on", days: "followup2_days", text: "followup2", def: "followup2_default", status: "followup2_status", d: 10, title: "Follow-up 2, the last one, if they still don't reply", after: "follow-up 1" },
+};
+const fuOn = (c, k) => c.followups_on !== false && (k === 1 || c.followup2_on !== false);
+const fuDays = (c, k) => c[FU[k].days] || FU[k].d;
+const fuOf = (c, k) => c[FU[k].text] || structuredClone(c[FU[k].def] || { language: "fr", body: "", translations: {} });
+const fuText = (fu, l) => (l === (fu.language || "fr") ? fu.body : fu.translations?.[l] || "");
+const fuMissing = (c, k) => coveredLangs(c.versions).filter((l) => !fuText(fuOf(c, k), l).trim());
+const day = (iso) => new Date(iso).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+const closeDays = (c) => c.close_days || 15;
+const closeTxt = (c) => (c.close_on !== false ? `“No reply” ${closeDays(c)} days after the last email` : "");
+const fuSummary0 = (c) => (!fuOn(c, 1) ? "none" : fuOn(c, 2) ? `follow-ups after ${fuDays(c, 1)} days, then ${fuDays(c, 2)} more` : `follow-up after ${plural(fuDays(c, 1), "day")}`);
+const fuSummary = (c) => [fuSummary0(c) === "none" ? "" : fuSummary0(c), closeTxt(c)].filter(Boolean).join(", then ") || "none";
+
+/** The third automation: those who never answered become "No reply" (not blocked: a later
+ * campaign can try them again; a late reply still moves them to Replied). */
+function closeSection(c) {
+  const on = c.close_on !== false;
+  return `<div class="cb-fu auto ${on ? "on" : ""}" data-fu="close">
+    <div class="auto-h"><label class="check"><input type="checkbox" class="chk" data-close-on ${on ? "checked" : ""}> <b>Mark as “No reply” those who never answer</b></label><span class="pill ${on ? "st-pilot" : ""}">${on ? "On" : "Off"}</span></div>
+    <p class="small muted" style="margin:0">Their status becomes <b>No reply</b>: the campaign is over for them, nothing more is sent. They aren't blocked: a later campaign can try them again, and if they answer late they move to Replied.</p>
+    ${on ? `<label class="fu-days small muted"><span>after</span><input class="input sm" type="number" min="1" max="90" data-close-days value="${closeDays(c)}" aria-label="Days after the last email"><span>days after the last email (the last follow-up${fuOn(c, 1) ? "" : ", or the first email when follow-ups are off"})</span></label>` : ""}</div>`;
+}
+
+function setFuText(c, k, l, text) {
+  const fu = (c[FU[k].text] = fuOf(c, k));
+  if (l !== (fu.language || "fr") && !fu.body.trim()) { // nothing in the main language: this one becomes it
+    const { [l]: _, ...rest } = fu.translations || {};
+    Object.assign(fu, { language: l, body: text, translations: rest });
+  } else if (l === (fu.language || "fr")) fu.body = text;
+  else fu.translations = { ...(fu.translations || {}), [l]: text };
+}
+
+/** A follow-up's text, with a tab per language the first emails are written in. */
+function fuEditor(c, k, lang) {
+  const fu = fuOf(c, k), langs = coveredLangs(c.versions);
+  const l = langs.includes(lang) ? lang : langs[0];
+  const miss = fuMissing(c, k);
+  return `<div class="fu-ed">
+    ${langs.length > 1 ? `<div class="cb-ltabs" role="tablist" aria-label="Language of follow-up ${k}">${langs.map((x) => `<button type="button" role="tab" data-fulang="${x}" data-fustep="${k}" aria-selected="${x === l}">${esc(LANG[x] || x)}${fuText(fu, x).trim() ? "" : ` <span class="lt-todo">to write</span>`}</button>`).join("")}</div>` : ""}
+    <label class="small muted">Follow-up ${k}${langs.length > 1 ? ` in ${esc(LANG[l] || l)}` : ""}<textarea class="input mailbody" rows="9" data-fubody="${l}" data-fustep="${k}" lang="${l}" placeholder="${langs.length > 1 && l !== (fu.language || "fr") ? `Follow-up ${k} in ${esc(LANG[l] || l)}` : ""}">${esc(fuText(fu, l))}</textarea></label>
+    <p class="small muted" style="margin:0">Subject: “Re: ” and the first email's, in the same conversation. No images. Your {signature} and the opt-out line are added as on the first email.</p>
+    ${miss.length ? `<div class="note warn"><span>Not written in ${esc(langList(miss))} yet: those leads won't get follow-up ${k}. Nobody gets one in a language they don't speak.</span></div>` : ""}</div>`;
+}
+
+function fuSection(c, k) {
+  const on = fuOn(c, k), blocked = k === 2 && !fuOn(c, 1);
+  return `<div class="cb-fu auto ${on ? "on" : ""}" data-fu="${k}">
+    <div class="auto-h"><label class="check"><input type="checkbox" class="chk" data-followups="${k}" ${c[FU[k].on] !== false ? "checked" : ""} ${blocked ? "disabled" : ""}> <b>${FU[k].title}</b></label><span class="pill ${on ? "st-pilot" : ""}">${on ? "On" : "Off"}</span></div>
+    ${blocked ? `<p class="small muted" style="margin:0">Needs follow-up 1: it goes ${fuDays(c, 2)} days after it.</p>`
+      : `<p class="small muted" style="margin:0">${k === 1 ? "One email, sent on its own as a reply to the first one, in the lead's language." : "A short last email, to those who answered neither. After it, nothing more goes to them."}</p>`}
+    ${on ? `<label class="fu-days small muted"><span>after</span><input class="input sm" type="number" min="1" max="30" data-fudays="${k}" value="${fuDays(c, k)}" aria-label="Days after ${FU[k].after}"><span>days after ${FU[k].after}, if they haven't replied</span></label>
+    ${k === 1 ? `<p class="small muted" style="margin:0">Follow-ups go out Monday to Friday 9:00–18:00, a few minutes apart, even though you send first emails yourself.</p>` : ""}
+    ${fuEditor(c, k, (B.fuLang || {})[k])}` : ""}</div>`;
+}
+
 // --- the list --------------------------------------------------------------------------
 
 export const campaignsView = {
@@ -103,6 +163,10 @@ function payload() {
   return {
     name: c.name, kind: c.kind, filters: c.filters, size: c.size, order: c.order, excluded: c.excluded, included: c.included,
     daily_cap: c.daily_cap, review: c.review, metric: c.metric, start_on: c.start_on || "", followups_on: c.followups_on,
+    followup_days: fuDays(c, 1), followup2_on: c.followup2_on !== false, followup2_days: fuDays(c, 2),
+    followup: c.followup?.body?.trim() ? c.followup : undefined, // an empty text isn't saved
+    followup2: c.followup2?.body?.trim() ? c.followup2 : undefined,
+    close_on: c.close_on !== false, close_days: closeDays(c),
     versions: c.versions.map((v) => ({ id: v.id || null, name: v.name, subject: v.subject, body: v.body, asset_ids: v.asset_ids, attach_photo: v.attach_photo, language: mainLang(v), translations: v.translations || {} })),
   };
 }
@@ -160,6 +224,7 @@ function drawSteps() {
   const steps = [
     ["who", "Who", a ? `${a.chosen} of ${a.matching.toLocaleString("en")} leads` : "…"],
     ["emails", n > 1 ? "Emails · A/B test" : "Email", n > 1 ? `${n} versions to compare` : "one version"],
+    ["automations", "Automations", fuSummary(c)],
     ["sending", "Sending", `${c.daily_cap} a day · ${B.manual ? "you send each one" : c.review === "auto" ? "approved once" : "you review daily"}`],
   ];
   const el = $("[data-steps]");
@@ -167,16 +232,18 @@ function drawSteps() {
   drawSummary();
 }
 
+const STEPS = ["who", "emails", "automations", "sending"];
+
 function drawStep() {
   const el = $("[data-step]");
   if (!el) return;
   // Redrawing replaces the inputs: keep the one being typed in focused, caret in place.
   const focus = document.activeElement?.id && el.contains(document.activeElement) ? document.activeElement : null;
   const keep = focus && { id: focus.id, s: focus.selectionStart, e: focus.selectionEnd };
-  const i = ["who", "emails", "sending"].indexOf(B.step);
-  el.innerHTML = (B.step === "who" ? stepWho() : B.step === "emails" ? stepEmails() : stepSending())
-    + `<div class="cb-nav">${i ? `<button class="btn" data-go="${["who", "emails", "sending"][i - 1]}">Back</button>` : ""}<span class="grow"></span>
-       ${i < 2 ? `<button class="btn primary" data-go="${["who", "emails", "sending"][i + 1]}">Next: ${["", "the email", "sending"][i + 1]} →</button>` : `<button class="btn primary" data-start>Review and start</button>`}</div>`;
+  const i = STEPS.indexOf(B.step);
+  el.innerHTML = ({ who: stepWho, emails: stepEmails, automations: stepAutomations, sending: stepSending }[B.step] || stepWho)()
+    + `<div class="cb-nav">${i ? `<button class="btn" data-go="${STEPS[i - 1]}">Back</button>` : ""}<span class="grow"></span>
+       ${i < STEPS.length - 1 ? `<button class="btn primary" data-go="${STEPS[i + 1]}">Next: ${["", "the email", "automations", "sending"][i + 1]} →</button>` : `<button class="btn primary" data-start>Review and start</button>`}</div>`;
   if (B.step === "emails") wireEmails();
   if (keep) {
     const again = document.getElementById(keep.id);
@@ -417,7 +484,7 @@ function stepEmails() {
       <div class="cb-prev"><div class="row"><h4 style="margin:0">What a real lead gets</h4><span class="grow"></span><button class="btn sm" data-test>${small(I.send)} Send ${many ? "every version" : "it"} to me</button></div><div data-preview class="pv"><p class="small muted" style="padding:12px 16px;margin:0">Loading…</p></div></div>
     </div>
     ${many ? `<div class="cb-sec"><h4>The winner is the version with more…</h4><div class="cb-opts row">${[["reply", "Replies", "any answer that isn't a stop"], ["interested", "Interested leads", "a call, a free test or more"]].map(([k, t, h]) => `<button data-metric="${k}" aria-pressed="${c.metric === k}"><b>${t}</b> <span class="small muted">${h}</span></button>`).join("")}</div></div>` : ""}
-    <label class="check"><input type="checkbox" class="chk" data-followups ${c.followups_on ? "checked" : ""}> Follow-ups on day 4 and day 10 if they don't reply, the same for every version. Each waits for your review.</label>`;
+`;
 }
 
 let pvTimer;
@@ -452,6 +519,14 @@ function wireEmails() {
   preview();
 }
 
+// --- step 3: automations (what the app does on its own; can change any time) ---------------
+
+function stepAutomations() {
+  return `<h2>Automations</h2>
+    <p class="muted">What the app does on its own for this campaign. Set them now; you can change them any time, even once it's running, from the campaign page.</p>
+    ${fuSection(B.c, 1)}${fuSection(B.c, 2)}${closeSection(B.c)}`;
+}
+
 function stepSending() {
   const c = B.c;
   const today = new Date().toISOString().slice(0, 10);
@@ -465,7 +540,7 @@ function stepSending() {
       <div class="note ok">${small(I.check)} <span><b>You send each email yourself.</b> Each working morning, the day's emails (up to ${c.daily_cap}) are written and wait in Today. Read one, change it if you like, press Send, and the next one opens. Nothing leaves without your click. <a href="#settings">Change in Settings</a></span></div></div>`
     : `<div class="cb-sec"><h4>Before each email goes out</h4><div class="cb-opts">
       <button data-review="daily" aria-pressed="${c.review !== "auto"}"><b>I review each morning's batch</b><span class="small muted" style="display:block">The day's emails wait in Today. Skim, edit if you like, approve them in one click.</span></button>
-      <button data-review="auto" aria-pressed="${c.review === "auto"}"><b>Approved once, for the whole campaign</b><span class="small muted" style="display:block">First emails go out on their own once started. Follow-ups still wait for you.</span></button></div></div>`}</div></div>
+      <button data-review="auto" aria-pressed="${c.review === "auto"}"><b>Approved once, for the whole campaign</b><span class="small muted" style="display:block">First emails go out on their own once started. Automations (the follow-up) run as set in step 3.</span></button></div></div>`}</div></div>
     ${c.versions.length > 1 ? `<div class="note ok">${small(I.check)} <span>When one version is clearly better, the campaign page offers to send only that one to the leads left. Nothing switches without your click.</span></div>` : ""}`;
 }
 
@@ -483,6 +558,12 @@ function problems() {
   });
   const left = Object.values(a?.left_out || {}).reduce((x, y) => x + y, 0);
   if (left) out.push(["emails", `${left} matching leads left out: no text in their language yet.`, true]);
+  for (const k of [1, 2]) {
+    if (!fuOn(c, k)) continue;
+    const miss = fuMissing(c, k);
+    if (miss.length === coveredLangs(c.versions).length) out.push(["automations", `Follow-up ${k} has no text: write it, or turn it off.`]);
+    else if (miss.length) out.push(["automations", `No follow-up ${k} in ${langList(miss)} yet: those leads get none.`, true]);
+  }
   if (c.versions.length > 1 && a && a.chosen / c.versions.length < 20) out.push(["who", `Only ${Math.floor(a.chosen / c.versions.length)} leads per version: too few to tell versions apart. Aim for 40 or more each.`, true]);
   return out;
 }
@@ -502,7 +583,8 @@ function drawSummary() {
     <div class="cb-big2"><div><b>${chosen.toLocaleString("en")}</b><span>leads</span></div><div><b>${workdays(chosen, c.daily_cap)}</b><span>working days</span></div></div>
     <dl><dt>Who</dt><dd>${esc(KINDS_PL[c.kind])}${filt.length ? `: ${esc(filt.join(" · "))}` : ""}</dd>
       <dt>Order</dt><dd>${esc({ small: "Small and new first", score: "Best score first", random: "At random" }[c.order])}</dd>
-      <dt>Emails</dt><dd>${c.versions.length > 1 ? `${c.versions.length} versions, ${Math.round(100 / c.versions.length)} % each` : "One version"}${nImg ? ` · ${plural(nImg, "image")}` : ""}${c.followups_on ? " · follow-ups" : ""} · in ${esc(langList(coveredLangs(c.versions)))}</dd>
+      <dt>Emails</dt><dd>${c.versions.length > 1 ? `${c.versions.length} versions, ${Math.round(100 / c.versions.length)} % each` : "One version"}${nImg ? ` · ${plural(nImg, "image")}` : ""} · in ${esc(langList(coveredLangs(c.versions)))}</dd>
+      <dt>Automations</dt><dd>${esc(fuSummary(c))}</dd>
       <dt>Sending</dt><dd>${c.daily_cap} a day${c.start_on ? `, from ${esc(new Date(c.start_on).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))}` : ""} · ${B.manual !== false ? "you send each one" : c.review === "auto" ? "approved once" : "you approve each morning"}</dd></dl>
     ${probs.map(([step, t, soft]) => `<button class="cb-prob ${soft ? "soft" : ""}" data-go="${step}">${esc(t)}</button>`).join("")}
     <button class="btn cb-go" data-start ${blocking.length ? "disabled" : ""}>Start campaign</button></section>
@@ -518,6 +600,7 @@ function confirmStart() {
       <li>${small(I.check)} <span><b>${plural(a.chosen, "lead")}</b> get ${c.versions.length > 1 ? `one of <b>${c.versions.length} versions</b>, at random` : "the email"}.</span></li>
       <li>${small(I.check)} <span><b>${c.daily_cap} a day</b>, ${startsLater ? `from ${esc(c.start_on)}` : "from today, inside sending hours"}: about ${plural(workdays(a.chosen, c.daily_cap), "working day")}.</span></li>
       <li>${small(I.check)} <span>${c.review === "auto" ? "First emails go out <b>without asking you</b>." : "Each morning's emails <b>wait for you in Today</b> before anything goes out."}</span></li>
+      <li>${small(I.check)} <span>${fuOn(c, 1) ? `<b>Automations:</b> no reply after <b>${plural(fuDays(c, 1), "day")}</b>, follow-up 1 goes out <b>on its own</b>, in their language${fuOn(c, 2) ? `; still none <b>${plural(fuDays(c, 2), "day")}</b> later, follow-up 2, the last one` : ""}.` : "<b>No follow-up</b>: nothing goes out on its own."}${c.close_on !== false ? ` Those who never answer become <b>No reply</b> ${plural(closeDays(c), "day")} after the last email.` : ""} You can change automations any time from the campaign page.</span></li>
       <li>${small(I.check)} <span>The list of leads is fixed when you start. You can add more later, pause, or stop.</span></li></ul>
       <div class="row"><span class="grow"></span><button class="btn" data-close>Not yet</button><button class="btn primary" data-go-start>Start</button></div></div>`, { narrow: true });
   sheet.onclick = async (e) => {
@@ -545,6 +628,9 @@ function onBuilderInput(e) {
   if (t.dataset.f === "name") { c.name = t.value; save(); return; }
   if (t.dataset.f === "daily_cap") { c.daily_cap = Math.max(1, Math.min(60, +t.value || 1)); save(); drawSteps(); return; }
   if (t.dataset.f === "start_on") { c.start_on = t.value || null; save(); drawSummary(); return; }
+  if (t.dataset.fubody) { setFuText(c, +t.dataset.fustep, t.dataset.fubody, t.value); save(); drawSummary(); return; }
+  if (t.matches("[data-close-days]")) { c.close_days = Math.max(1, Math.min(90, +t.value || 15)); save(); drawSteps(); return; }
+  if (t.dataset.fudays) { const k = +t.dataset.fudays; c[FU[k].days] = Math.max(1, Math.min(30, +t.value || FU[k].d)); save(); drawSteps(); return; }
   if (t.dataset.sig) {
     B.sigs[t.dataset.sig] = t.value;
     clearTimeout(B.sigTimer);
@@ -606,6 +692,7 @@ async function onBuilderClick(e) {
   if (t.matches("label.cb-row")) return;
   if (d.go) { await flushSave(); B.step = d.go; drawSteps(); drawStep(); $("[data-step]")?.scrollIntoView({ block: "start", behavior: "smooth" }); return; }
   if (d.start !== undefined) return confirmStart();
+  if (d.fulang) { const k = +d.fustep; B.fuLang = { ...(B.fuLang || {}), [k]: d.fulang }; drawFu(k); $(`[data-fubody][data-fustep="${k}"]`)?.focus(); return; }
   if (d.delete !== undefined) {
     if (d.confirm !== "1") { d.confirm = "1"; t.textContent = "Click again to delete"; return; }
     await api(`/api/campaigns/${c.id}`, { method: "DELETE" });
@@ -697,7 +784,17 @@ function onBuilderChange(e) {
     else c.excluded = [...new Set([...c.excluded, id])];
     save(); refreshAudience();
   }
-  else if (t.matches("[data-followups]")) { c.followups_on = t.checked; save(); drawSummary(); }
+  else if (t.matches("[data-followups]")) { c[FU[+t.dataset.followups].on] = t.checked; save(); drawFu(1); drawFu(2); drawFu("close"); drawSteps(); }
+  else if (t.matches("[data-close-on]")) { c.close_on = t.checked; save(); drawFu("close"); drawSteps(); }
+}
+
+/** Redraw one follow-up block alone (keeps the rest of the step as it is). */
+function drawFu(k) {
+  const el = $(`.cb-fu[data-fu="${k}"]`);
+  if (!el) return;
+  const tmp = document.createElement("div");
+  tmp.innerHTML = k === "close" ? closeSection(B.c) : fuSection(B.c, k);
+  el.replaceWith(tmp.firstElementChild);
 }
 
 // One set of listeners on the canvas; they act only while a draft is shown.
@@ -714,11 +811,12 @@ function wire() {
 
 const STATE = {
   not_sent: ["Not sent yet", ""], to_review: ["Written, not sent", "todo"], approved: ["Approved, going out", ""],
-  waiting: ["Sent, no reply yet", ""], replied: ["Replied", "ok"], interested: ["Interested", "ok"],
+  waiting: ["Sent, no reply yet", ""], followed_up: ["Followed up, no reply yet", ""], followed_up_2: ["Followed up twice, no reply", ""], no_reply: ["No reply: done", ""],
+  bounced: ["Address bounced: find another", "bad"], bounced_retry: ["Bounced: send to their other address", "bad"], replied: ["Replied", "ok"], interested: ["Interested", "ok"],
   stopped: ["Asked to stop", "bad"], failed: ["Not sent (error)", "bad"], skipped: ["Skipped (contacted another way)", ""],
 };
 let leadFilter = "to_send";
-const TO_SEND = ["not_sent", "to_review", "approved", "failed"];
+const TO_SEND = ["not_sent", "to_review", "approved", "failed", "bounced_retry"];
 
 /** Open this lead's email to read and send; "Send and next" goes on with the leads after it. */
 async function sendFrom(c, ids, i) {
@@ -733,9 +831,9 @@ function renderResults(c) {
   const r = c.results, t = r.totals, test = r.test;
   const live = c.status === "running" || c.status === "paused";
   const toSend = r.leads.filter((l) => TO_SEND.includes(l.state)).map((l) => l.id);
-  const counts = { to_send: toSend.length, waiting: t.sent - t.replied - t.stopped, replied: t.replied + t.stopped, all: t.leads };
+  const counts = { to_send: toSend.length, waiting: t.sent - t.replied - t.stopped - (t.no_reply || 0), replied: t.replied + t.stopped, no_reply: t.no_reply || 0, all: t.leads };
   if (!counts[leadFilter] && leadFilter !== "all") leadFilter = counts.to_send ? "to_send" : counts.replied ? "replied" : counts.waiting ? "waiting" : "all";
-  const show = r.leads.filter((l) => leadFilter === "all" || (leadFilter === "replied" ? ["replied", "interested", "stopped"].includes(l.state) : leadFilter === "to_send" ? TO_SEND.includes(l.state) : l.state === leadFilter));
+  const show = r.leads.filter((l) => leadFilter === "all" || (leadFilter === "replied" ? ["replied", "interested", "stopped"].includes(l.state) : leadFilter === "to_send" ? TO_SEND.includes(l.state) : leadFilter === "waiting" ? ["waiting", "followed_up", "followed_up_2"].includes(l.state) : l.state === leadFilter));
   const vcard = (v, i) => {
     const tv = test?.versions.find((x) => x.template_id === v.template_id);
     const lead = test && test.leader === v.letter && t.sent;
@@ -743,6 +841,8 @@ function renderResults(c) {
     return `<article class="cr-v ${lead || won ? "lead" : ""}" style="--vc:${VCOL[i]}">
       <div class="row"><span class="vl" style="background:${VCOL[i]}">${v.letter}</span><div style="flex:1;min-width:0"><b>${esc(v.name && v.name !== v.letter ? v.name : `Version ${v.letter}`)}</b><div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">“${esc(v.subject)}”${v.asset_ids.length ? ` · ${plural(v.asset_ids.length, "image")}` : ""}</div></div>${won ? `<span class="pill st-customer">Winner</span>` : lead ? `<span class="pill st-pilot">Ahead</span>` : ""}</div>
       ${v.asset_ids.length ? `<div class="cr-imgs">${v.asset_ids.map((id) => `<img src="/api/assets/${id}/thumb" alt="">`).join("")}</div>` : ""}
+      ${(() => { const cv = c.versions.find((x) => x.id === v.template_id); if (!cv) return ""; const ls = vLangs(cv).filter((l) => written(cv, l));
+        return `<div class="row small muted cr-vlang"><span style="flex:1">In ${esc(ls.length > 3 ? `${langList(ls.slice(0, 3))} and ${ls.length - 3} more` : langList(ls))}</span><button class="btn sm" data-tr-edit="${cv.id}">Languages</button></div>`; })()}
       <div class="cr-nums"><div><b>${v.sent}</b><span>sent</span></div><div><b>${v.replied}</b><span>replied</span></div><div><b>${v.interested}</b><span>interested</span></div><div><b style="color:var(--vc)">${v.sent ? pct((test?.metric === "interested" ? v.interested : v.replied) / v.sent) : "–"}</b><span>${test?.metric === "interested" ? "interest" : "reply"} rate</span></div></div>
       ${tv && tv.sent ? `<div class="cr-bar"><span class="small muted">Likely ${test.metric === "interested" ? "interest" : "reply"} rate: ${pct(tv.low)} to ${pct(tv.high)}</span><div class="rng"><span style="left:${tv.low * 100}%;width:${Math.max(1, (tv.high - tv.low) * 100)}%"></span><i style="left:${(tv.rate || 0) * 100}%"></i></div></div>
         <div class="cr-bar"><span class="small muted">Chance of being the best: ${pct(tv.chance_best)}</span><div class="pb"><span style="width:${tv.chance_best * 100}%"></span></div></div>` : `<p class="small muted" style="margin:0">${v.planned} planned · ${v.sent ? `${v.sent} sent so far` : "nothing sent yet"}</p>`}
@@ -760,7 +860,7 @@ function renderResults(c) {
     ${c.status === "paused" ? `<div class="note warn" style="margin-bottom:12px">Paused: no new emails are written. Approved first emails went back to review.</div>` : ""}
     ${c.start_on && c.start_on > new Date().toISOString().slice(0, 10) ? `<div class="note info" style="margin-bottom:12px">Starts on ${esc(c.start_on)}: the first emails are written that morning.</div>` : ""}
     <div class="cp-bar big" role="img" aria-label="${t.replied} replied, ${t.sent - t.replied} waiting, ${t.to_review + t.approved} written, ${t.not_sent} not written yet"><span style="flex:${t.replied};background:var(--warn)"></span><span style="flex:${t.sent - t.replied};background:var(--emerald)"></span><span style="flex:${t.to_review + t.approved};background:var(--mint)"></span><span style="flex:${t.not_sent}"></span></div>
-    <div class="cr-kpi"><div><b>${t.sent}</b><span>emailed, of ${t.leads}</span></div><div><b>${t.replied}${t.sent ? ` <small>${pct(t.replied / t.sent)}</small>` : ""}</b><span>replied</span></div><div><b>${t.interested}</b><span>interested</span></div><div><b>${t.pilots}</b><span>free tests</span></div><div><b>${t.stopped}</b><span>asked to stop</span></div>
+    <div class="cr-kpi"><div><b>${t.sent}</b><span>emailed, of ${t.leads}</span></div><div><b>${t.replied}${t.sent ? ` <small>${pct(t.replied / t.sent)}</small>` : ""}</b><span>replied</span></div><div><b>${t.interested}</b><span>interested</span></div><div><b>${t.pilots}</b><span>free tests</span></div><div><b>${t.stopped}</b><span>asked to stop</span></div>${t.bounced ? `<div title="The address doesn't exist: the lead is flagged; find their own address on their site"><b>${t.bounced}</b><span>bounced</span></div>` : ""}
       ${t.to_review ? `<a href="#today" class="todo"><b>${t.to_review}</b><span>to review in Today →</span></a>` : ""}</div>
     ${r.versions.length > 1 ? `<section class="card cr-test"><div class="row"><h2>A/B test: which email works better?</h2><span class="small muted">counted on ${test?.metric === "interested" ? "interested leads" : "replies"} · ${Math.round(100 / r.versions.length)} % of leads each</span></div>
         ${test?.suggest ? `<div class="cr-verdict win"><span><b>Version ${esc(test.suggest.letter)} is clearly better.</b> ${esc(test.verdict.text)} ${plural(test.suggest.unsent, "lead")} haven't had their email yet.</span><button class="btn primary" data-winner="${test.suggest.template_id}" data-letter="${esc(test.suggest.letter)}" data-unsent="${test.suggest.unsent}">Send ${esc(test.suggest.letter)} to the ${test.suggest.unsent} left</button><button class="btn" data-keep-testing>Keep testing</button></div>`
@@ -769,11 +869,12 @@ function renderResults(c) {
         <div class="cr-vs">${r.versions.map(vcard).join("")}</div>
         <p class="small muted" style="margin:0">“Likely rate” is where each version's true rate probably sits, given how few emails have gone out; the ranges narrow as more go. The verdict waits until each version has about 20 emails.</p></section>`
       : `<section class="card cr-test"><div class="cr-vs one">${r.versions.map(vcard).join("")}</div></section>`}
+    ${fuCard(c)}
     ${Object.keys(r.languages || {}).length > 1 ? `<section class="card cr-langs"><h2>By language</h2><div class="cr-lg">${Object.entries(r.languages).map(([l, x]) => `<div><b>${esc(LANG[l] || l)}</b><span class="small muted">${x.leads} leads · ${x.sent} sent · ${x.replied} replied${x.sent ? ` (${pct(x.replied / x.sent)})` : ""}</span></div>`).join("")}</div></section>` : ""}
     <div class="cr-low">
       <section class="card"><h2>Day by day</h2>${r.days.length ? `<div class="cr-days">${r.days.map((d) => `<div title="${d.day}: ${d.sent} sent, ${d.replies} replies"><span class="b" style="height:${(d.sent / maxDay) * 100}%"><span class="r" style="height:${d.sent ? Math.min(100, (d.replies / d.sent) * 100) : 0}%"></span></span><span class="small muted">${new Date(d.day).toLocaleDateString("en-GB", { weekday: "short" }).slice(0, 2)}</span></div>`).join("")}</div>
         <p class="small muted" style="margin:6px 0 0"><span class="sw" style="background:var(--emerald)"></span> sent · <span class="sw" style="background:var(--warn)"></span> replies</p>` : `<p class="small muted">Nothing sent yet.</p>`}</section>
-      <section class="card"><div class="row"><h2 style="flex:1">The ${t.leads} leads</h2><div class="seg" role="group" aria-label="Show">${[["to_send", "To send"], ["waiting", "Sent"], ["replied", "Replied"], ["all", "All"]].map(([k, l]) => `<button data-lf="${k}" aria-pressed="${leadFilter === k}">${l} <span class="mono small">${counts[k]}</span></button>`).join("")}</div></div>
+      <section class="card"><div class="row"><h2 style="flex:1">The ${t.leads} leads</h2><div class="seg" role="group" aria-label="Show">${[["to_send", "To send"], ["waiting", "Sent"], ["replied", "Replied"], ["no_reply", "No reply"], ["all", "All"]].map(([k, l]) => `<button data-lf="${k}" aria-pressed="${leadFilter === k}">${l} <span class="mono small">${counts[k]}</span></button>`).join("")}</div></div>
         ${show.length ? `<div class="cr-leads">${show.slice(0, 200).map((l) => `<div class="cr-lead ${TO_SEND.includes(l.state) ? "can-send" : ""}" data-open="${l.id}" role="button" tabindex="0"><span class="vl sm" style="background:${VCOL[LET.indexOf(l.letter)] || "var(--dim)"}">${esc(l.letter)}</span><span class="nm"><b>${esc(l.person || l.name)}</b> <span class="muted small">${esc(l.city || "")}</span>${l.reply ? `<span class="small muted q">“${esc(l.reply)}”</span>` : ""}</span><span class="chip-s ${STATE[l.state]?.[1] || ""}">${STATE[l.state]?.[0] || l.state}</span><span class="small muted">${esc(l.at ? when(l.at) : "")}</span>${TO_SEND.includes(l.state) && c.status !== "draft" ? `<button class="btn sm primary" data-send-lead="${l.id}">${small(I.send, 13)} Send</button>` : `<span></span>`}</div>`).join("")}</div>` : `<p class="small muted">Nobody here.</p>`}</section>
     </div></div>`;
   C().onclick = async (e) => {
@@ -789,6 +890,9 @@ function renderResults(c) {
       else if (d.dup !== undefined) await busy(b, async () => { const x = await api(`/api/campaigns/${c.id}/duplicate`, { method: "POST" }); location.hash = `campaign/${x.id}`; });
       else if (d.more !== undefined) addLeads(c);
       else if (d.settings !== undefined) liveSettings(c);
+      else if (d.fuEdit) editFollowup(c, +d.fuEdit);
+      else if (d.closeEdit !== undefined) editClose(c);
+      else if (d.trEdit) editTranslations(c, +d.trEdit);
       else if (d.winner) {
         if (d.confirm !== "1") { d.confirm = "1"; b.textContent = `Confirm: everyone left gets ${d.letter}`; return; }
         await busy(b, async () => { const x = await api(`/api/campaigns/${c.id}/winner`, { method: "POST", body: { template_id: +d.winner } }); toast(`Done: the ${d.unsent} leads left get version ${d.letter}${x.moved ? "" : ""}.`); confetti(); changed(); });
@@ -841,16 +945,140 @@ function liveSettings(c) {
     <form class="sheet-b"><label>Name<input class="input" name="name" value="${esc(c.name)}"></label>
     <label>Emails a day<input class="input" type="number" name="daily_cap" min="1" max="60" value="${c.daily_cap}"></label>
     <label class="check"><input type="checkbox" class="chk" name="auto" ${c.review === "auto" ? "checked" : ""}> Approve first emails automatically (no morning review)</label>
-    <label class="check"><input type="checkbox" class="chk" name="fu" ${c.followups_on ? "checked" : ""}> Write follow-ups after each first email</label>
-    <p class="small muted" style="margin:0">Who it reaches and its emails are fixed once started. To change them, duplicate it.</p>
+    <p class="small muted" style="margin:0">Who it reaches and its first emails are fixed once started. To change them, duplicate it. Automations can change any time, from their card.</p>
     <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`, { narrow: true });
   sheet.onclick = (e) => { if (e.target.closest("[data-close]")) closeModal(); };
   sheet.onsubmit = async (e) => {
     e.preventDefault();
     const f = e.target;
     await busy(f.querySelector(".primary"), async () => {
-      await api(`/api/campaigns/${c.id}`, { method: "PUT", body: { name: f.name.value, daily_cap: +f.daily_cap.value, review: f.auto.checked ? "auto" : "daily", followups_on: f.fu.checked } });
+      await api(`/api/campaigns/${c.id}`, { method: "PUT", body: { name: f.name.value, daily_cap: +f.daily_cap.value, review: f.auto.checked ? "auto" : "daily" } });
       closeModal();
+      changed();
+    });
+  };
+}
+
+// --- the follow-up, on a started campaign -----------------------------------------------------
+
+function fuCard(c) {
+  const row = (k) => {
+    const st = c[FU[k].status] || {}, on = fuOn(c, k) && c[FU[k].text];
+    const miss = Object.entries(st.missing || {}), text = c[FU[k].text];
+    return `<div class="cr-auto"><div class="row auto-h"><b style="flex:1">${FU[k].title}</b>
+        <span class="pill ${on ? "st-pilot" : ""}">${on ? `On, ${plural(fuDays(c, k), "day")} after ${FU[k].after}` : "Off"}</span>
+        <button class="btn sm" data-fu-edit="${k}">${text ? "Edit" : "Write it"}</button></div>
+      ${text ? `<p class="small muted fu-prev">“${esc(text.body.replace(/\s+/g, " ").slice(0, 200))}${text.body.length > 200 ? "…" : ""}”</p>`
+        : `<div class="note warn"><span><b>Not written yet</b>, so nobody gets it. Write it (a ready-made text in every language is waiting).</span></div>`}
+      ${on ? `<div class="cr-fu-n"><div><b>${st.sent || 0}</b><span>sent</span></div><div><b>${st.waiting || 0}</b><span>going out now</span></div><div><b>${st.later || 0}</b><span>planned${st.next_at ? `, next ${esc(day(st.next_at))}` : ""}</span></div><div><b>${st.replied || 0}</b><span>not needed: replied</span></div></div>` : ""}
+      ${on && miss.length ? `<div class="note warn"><span>Not written in ${esc(miss.map(([l, n]) => `${LANG[l] || l} (${plural(n, "lead")})`).join(", "))}: they don't get it until you add it.</span></div>` : ""}</div>`;
+  };
+  const closeRow = () => {
+    const on = c.close_on !== false, st = c.close_status || {};
+    return `<div class="cr-auto"><div class="row auto-h"><b style="flex:1">Mark as “No reply” those who never answer</b>
+        <span class="pill ${on ? "st-pilot" : ""}">${on ? `On, ${plural(closeDays(c), "day")} after the last email` : "Off"}</span>
+        <button class="btn sm" data-close-edit>Edit</button></div>
+      ${on ? `<div class="cr-fu-n"><div><b>${st.done || 0}</b><span>marked No reply</span></div><div><b>${st.later || 0}</b><span>to mark if still silent${st.next_at ? `, next ${esc(day(st.next_at))}` : ""}</span></div></div>` : ""}</div>`;
+  };
+  return `<section class="card cr-fu"><div class="row"><h2 style="flex:1;margin:0">Automations</h2><span class="small muted">what the app does on its own · change them any time</span></div>
+    ${row(1)}${row(2)}${closeRow()}
+    <p class="small muted" style="margin:0">Follow-ups go out on their own, Monday to Friday 9:00–18:00, a few minutes apart, as replies in the first email's conversation. A reply stops them. If the app was off on the day, they go out once it's back on.</p></section>`;
+}
+
+/** A started campaign's email in other languages: its text is fixed, but languages can be
+ * added or corrected any time. Leads speaking a new one can then join with "Add leads". */
+function editTranslations(c, versionId) {
+  const v = structuredClone(c.versions.find((x) => x.id === versionId));
+  const main = mainLang(v);
+  v.translations = v.translations || {};
+  let cur = Object.keys(v.translations)[0] || null;
+  const before = new Set(vLangs(v).filter((l) => written(v, l)));
+  const draw = () => {
+    const ls = Object.keys(v.translations);
+    const others = Object.keys(LANG).filter((l) => l !== main && !ls.includes(l));
+    const tx = cur ? v.translations[cur] : null;
+    return `<div class="cb-ltabs" role="tablist" aria-label="Languages"><span class="small muted">${esc(LANG[main])} (main, fixed) ·</span>
+        ${ls.map((l) => `<button type="button" role="tab" data-tl="${l}" aria-selected="${l === cur}">${esc(LANG[l])}${written(v, l) ? "" : ` <span class="lt-todo">to write</span>`}</button>`).join("")}
+        <select class="input sm" data-tl-add aria-label="Add a language"><option value="">+ Language</option>${others.map((l) => `<option value="${l}">${esc(LANG[l])}</option>`).join("")}</select>
+        ${cur ? `<button type="button" class="btn ghost danger sm" data-tl-del>Remove ${esc(LANG[cur])}</button>` : ""}</div>
+      ${tx ? `<label class="small muted tl-f">Subject in ${esc(LANG[cur])}<input class="input" data-tl-f="subject" lang="${cur}" value="${esc(tx.subject)}" placeholder="${esc(v.subject)}"></label>
+        <label class="small muted tl-f">Email in ${esc(LANG[cur])}<textarea class="input mailbody" rows="12" data-tl-f="body" lang="${cur}">${esc(tx.body)}</textarea></label>`
+        : `<p class="small muted">Only in ${esc(LANG[main])} so far. Add a language to write it for leads who speak it.</p>`}`;
+  };
+  const sheet = openModal(`<div class="sheet-h"><h2>Version ${esc(v.name || "")}: languages</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+    <form class="sheet-b"><div data-tl-here>${draw()}</div>
+      <p class="small muted" style="margin:0">Each lead gets the email in their language. Emails already sent don't change.</p>
+      <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`);
+  const redraw = () => { $("[data-tl-here]", sheet).innerHTML = draw(); };
+  sheet.oninput = (e) => { const f = e.target.dataset.tlF; if (f && cur) v.translations[cur][f] = e.target.value; };
+  sheet.onchange = (e) => { if (e.target.matches("[data-tl-add]") && e.target.value) { cur = e.target.value; v.translations[cur] = { subject: "", body: "" }; redraw(); $("[data-tl-f=subject]", sheet)?.focus(); } };
+  sheet.onclick = (e) => {
+    if (e.target.closest("[data-close]")) return closeModal();
+    const b = e.target.closest("button");
+    if (b?.dataset.tl) { cur = b.dataset.tl; redraw(); }
+    if (b?.dataset.tlDel !== undefined && cur) { delete v.translations[cur]; cur = Object.keys(v.translations)[0] || null; redraw(); }
+  };
+  sheet.onsubmit = async (e) => {
+    e.preventDefault();
+    const half = Object.entries(v.translations).find(([, t]) => (t.subject.trim() || t.body.trim()) && !(t.subject.trim() && t.body.trim()));
+    if (half) { cur = half[0]; redraw(); toast(`${LANG[half[0]]} needs both a subject and an email.`, { err: true }); return; }
+    v.translations = Object.fromEntries(Object.entries(v.translations).filter(([, t]) => t.subject.trim() && t.body.trim()));
+    const versions = c.versions.map((x) => (x.id === v.id ? v : x)).map((x) => ({ id: x.id, name: x.name, subject: x.subject, body: x.body, asset_ids: x.asset_ids, attach_photo: x.attach_photo, language: mainLang(x), translations: x.translations || {} }));
+    await busy(e.target.querySelector(".primary"), async () => {
+      await api(`/api/campaigns/${c.id}`, { method: "PUT", body: { versions } });
+      closeModal();
+      const added = vLangs(v).filter((l) => written(v, l) && !before.has(l));
+      toast(added.length ? `Saved. Leads who speak ${langList(added)} can now join: use “Add leads”${c.versions.length > 1 ? " once every version has it" : ""}.` : "Saved.");
+      changed();
+    });
+  };
+}
+
+function editClose(c) {
+  const sheet = openModal(`<div class="sheet-h"><h2>Automation: “No reply”</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+    <form class="sheet-b"><label class="check"><input type="checkbox" class="chk" name="on" ${c.close_on !== false ? "checked" : ""}> Mark as “No reply” those who never answer</label>
+      <label class="fu-days small muted"><span>after</span><input class="input sm" type="number" name="days" min="1" max="90" value="${closeDays(c)}"><span>days after the last email they got from this campaign</span></label>
+      <p class="small muted" style="margin:0">Only once no follow-up is still to come. They aren't blocked: a later campaign can try them again, and a late reply moves them to Replied.</p>
+      <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`, { narrow: true });
+  sheet.onclick = (e) => { if (e.target.closest("[data-close]")) closeModal(); };
+  sheet.onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target, days = Math.max(1, Math.min(90, +f.days.value || 15));
+    await busy(f.querySelector(".primary"), async () => {
+      await api(`/api/campaigns/${c.id}`, { method: "PUT", body: { close_on: f.on.checked, close_days: days } });
+      closeModal();
+      toast(f.on.checked ? `Saved. Those who never answer become “No reply” ${plural(days, "day")} after the last email.` : "“No reply” automation off.");
+      changed();
+    });
+  };
+}
+
+function editFollowup(c, k) {
+  const x = { versions: c.versions, [FU[k].text]: structuredClone(fuOf(c, k)), [FU[k].def]: c[FU[k].def] };
+  let on = c[FU[k].on] !== false || !c[FU[k].text], days = fuDays(c, k), lang = null;
+  const blocked = k === 2 && c.followups_on === false;
+  const sheet = openModal(`<div class="sheet-h"><h2>Automation: follow-up ${k}</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+    <form class="sheet-b"><label class="check"><input type="checkbox" class="chk" name="on" ${on ? "checked" : ""}> ${k === 1 ? "Send follow-up 1 on its own if they don't reply" : "Send follow-up 2, the last one, if they still don't reply"}</label>
+      ${blocked ? `<div class="note warn"><span>Follow-up 1 is off, so follow-up 2 can't go out: it's sent ${plural(days, "day")} after follow-up 1.</span></div>` : ""}
+      <label class="fu-days small muted"><span>after</span><input class="input sm" type="number" name="days" min="1" max="30" value="${days}"><span>days after ${FU[k].after}</span></label>
+      <div data-fu-here>${fuEditor(x, k, lang)}</div>
+      <p class="small muted" style="margin:0">A change applies to every follow-up ${k} not sent yet, including those already waiting for a free slot.</p>
+      <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`);
+  sheet.oninput = (e) => { if (e.target.dataset.fubody) setFuText(x, k, e.target.dataset.fubody, e.target.value); };
+  sheet.onclick = (e) => {
+    const b = e.target.closest("button");
+    if (e.target.closest("[data-close]")) return closeModal();
+    if (b?.dataset.fulang) { lang = b.dataset.fulang; $("[data-fu-here]", sheet).innerHTML = fuEditor(x, k, lang); }
+  };
+  sheet.onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target, text = x[FU[k].text];
+    on = f.on.checked; days = Math.max(1, Math.min(30, +f.days.value || FU[k].d));
+    if (on && !text.body.trim()) { toast(`Write follow-up ${k} first.`, { err: true }); return; }
+    await busy(f.querySelector(".primary"), async () => {
+      await api(`/api/campaigns/${c.id}`, { method: "PUT", body: { [FU[k].on]: on, [FU[k].days]: days, ...(text.body.trim() ? { [FU[k].text]: text } : {}) } });
+      closeModal();
+      toast(on ? `Saved. Follow-up ${k} goes out ${plural(days, "day")} after ${FU[k].after} to those who haven't replied.` : `Follow-up ${k} off.`);
       changed();
     });
   };

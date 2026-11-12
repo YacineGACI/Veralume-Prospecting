@@ -20,6 +20,10 @@ def tick(poll_inbox: bool) -> None:
     with session() as s:
         campaigns.prepare_running(s)
         s.commit()
+        campaigns.write_due_followups(s)  # also catches up on days the app was off
+        s.commit()
+        campaigns.close_silent(s)  # "No reply" for those who never answered
+        s.commit()
         msg = mailer.send_due(s)
         s.commit()
         if msg is not None:

@@ -9,7 +9,7 @@ from __future__ import annotations
 import email
 import imaplib
 import re
-from datetime import timedelta
+from datetime import datetime, timedelta
 from email.message import EmailMessage
 from email.policy import default as default_policy
 from email.utils import getaddresses, parseaddr, parsedate_to_datetime
@@ -23,7 +23,7 @@ from prospecting import pilot
 from prospecting.config import settings
 from prospecting.contacts import mark
 from prospecting.db import Activity, Lead, Message, now
-from prospecting.mailer import cancel_pending, iso, local
+from prospecting.mailer import cancel_pending, get_setting, iso, local, set_setting
 
 STATUS: dict[str, Any] = {"last_poll": None, "last_error": None}
 _STOP = re.compile(
@@ -80,8 +80,22 @@ def _ids(value: Any) -> list[str]:
 
 
 def _all_text(em: EmailMessage) -> str:
+    """Every readable line of a bounce: its text parts, the lines of its delivery report
+    ("Final-Recipient: rfc822; x@y") and the headers of the email it returns (its
+    Message-ID), which the parser keeps as headers, not as text."""
     out = []
     for part in em.walk():
+        ctype = part.get_content_type()
+        if ctype == "message/delivery-status":
+            for block in part.get_payload() or []:
+                out.extend(f"{k}: {v}" for k, v in block.items())
+            continue
+        if ctype == "message/rfc822":
+            for inner in part.get_payload() or []:
+                out.extend(
+                    f"{k}: {v}" for k, v in inner.items() if k.lower() in ("message-id", "to")
+                )
+            continue
         if part.is_multipart():
             continue
         payload = part.get_payload(decode=True)
@@ -94,11 +108,21 @@ def _bounce(s: Session, em: EmailMessage) -> str | None:
     text = _all_text(em)
     refs = _ids(em["In-Reply-To"]) + _ids(em["References"]) + _ids(text)
     failed = [a.lower() for a in _ADDR.findall(str(em["X-Failed-Recipients"] or ""))]
-    failed += [a.lower() for a in re.findall(r"Final-Recipient:\s*rfc822;\s*<?([^\s>]+)", text, re.I)]
+    failed += [
+        a.lower()
+        for a in re.findall(
+            r"(?:Final|Original)-Recipient:\s*rfc822;\s*<?([^\s>;]+)", text, re.IGNORECASE
+        )
+    ]
     q = select(Message).where(Message.direction == "out", Message.status == "sent")
     ours = list(s.scalars(q.where(Message.message_id.in_(refs)))) if refs else []
     if not ours and failed:
         ours = list(s.scalars(q.where(Message.to_addr.in_(failed))))
+    if not ours:  # a plain-text bounce: an address we wrote to in the last month, named in it
+        since = iso(local() - timedelta(days=30))
+        named = {a.lower() for a in _ADDR.findall(text)} - {str(settings.sender or "").lower()}
+        if named:
+            ours = list(s.scalars(q.where(Message.to_addr.in_(named), Message.sent_at >= since)))
     for m in ours:
         lead = s.get(Lead, m.lead_id)
         m.status, m.error = "failed", "bounced"
@@ -154,7 +178,7 @@ def handle(s: Session, em: EmailMessage) -> str | None:
         lead.next_action = lead.next_action_at = None
         s.add(Activity(lead_id=lead.id, kind="status", text="asked to stop → do not contact"))
         return "stop"
-    if lead.status in ("new", "shortlisted", "contacted"):
+    if lead.status in ("new", "shortlisted", "contacted", "no_reply"):
         s.add(Activity(lead_id=lead.id, kind="status", text=f"{lead.status} → replied"))
         lead.status = "replied"
     pilot.on_reply(s, lead)
@@ -162,8 +186,31 @@ def handle(s: Session, em: EmailMessage) -> str | None:
     return "reply"
 
 
-def poll(s: Session, days: int = 14) -> dict[str, int]:
-    """Read the last `days` of the inbox; record replies and bounces. The caller commits."""
+FULL_EVERY = timedelta(hours=1)  # the whole window is re-read this often, and on start
+BATCH = 500  # headers fetched per request
+_FULL_DONE = {"since_start": False}  # the first read after the app starts is always full
+
+
+def _window_start(state: dict[str, Any], days: int) -> Any:
+    """14 days back, or further when the last good check is older: after a long stop the
+    window reaches back to it (with a day's overlap), so nothing that came meanwhile is lost."""
+    start = local() - timedelta(days=days)
+    last_ok = state.get("last_ok")
+    if last_ok:
+        try:
+            start = min(start, datetime.fromisoformat(last_ok) - timedelta(days=1))
+        except ValueError:
+            pass
+    return start
+
+
+def poll(s: Session, days: int = 14, full: bool | None = None) -> dict[str, int]:
+    """Read new mail; record replies and bounces. The caller commits.
+
+    Every call reads only what arrived since the last one (Gmail numbers each email, the
+    highest one read is kept). Once an hour, on start, or if Gmail renumbered the mailbox,
+    the whole window is read again (`full`), in batches, so nothing is ever cut off. Each
+    email is recorded once, by its Message-ID, whichever read sees it."""
     if not (settings.imap_host and settings.smtp_user and settings.smtp_password):
         return {}
     out_q = select(Message.message_id, Message.to_addr).where(
@@ -174,31 +221,57 @@ def poll(s: Session, days: int = 14) -> dict[str, int]:
     our_to = {r[1].lower() for r in rows if r[1]}
     if not our_ids:
         return {}
+    state = dict(get_setting(s, "inbox_state", None) or {})
     counts: dict[str, int] = {}
-    since = (local() - timedelta(days=days)).strftime("%d-%b-%Y")
     with imaplib.IMAP4_SSL(settings.imap_host, settings.imap_port) as imap:
         imap.login(settings.smtp_user, settings.smtp_password)
         imap.select("INBOX", readonly=True)
-        _, data = imap.search(None, "SINCE", since)
-        nums = data[0].split()[-500:]
-        if not nums:
-            return counts
-        fields = "(MESSAGE-ID FROM IN-REPLY-TO REFERENCES)"
-        _, heads = imap.fetch(b",".join(nums), f"(BODY.PEEK[HEADER.FIELDS {fields}])")
+        validity = (imap.response("UIDVALIDITY")[1] or [None])[0]
+        validity = validity.decode() if isinstance(validity, bytes) else validity
+        last_uid = int(state.get("last_uid") or 0)
+        if full is None:
+            last_full = state.get("last_full")
+            full = (
+                not last_uid
+                or not _FULL_DONE["since_start"]
+                or validity != state.get("uidvalidity")  # renumbered: the old number means nothing
+                or not last_full
+                or datetime.fromisoformat(last_full) < datetime.fromisoformat(now()) - FULL_EVERY
+            )
+        if full:
+            since = _window_start(state, days).strftime("%d-%b-%Y")
+            _, data = imap.uid("SEARCH", None, "SINCE", since)
+        else:
+            _, data = imap.uid("SEARCH", None, "UID", f"{last_uid + 1}:*")
+        uids = [u for u in (data[0] or b"").split() if full or int(u) > last_uid]  # "n:*" always
+        fields = "(MESSAGE-ID FROM IN-REPLY-TO REFERENCES)"  # returns the last one
         wanted = []
-        for item in heads:
-            if not isinstance(item, tuple):
-                continue
-            h = email.message_from_bytes(item[1], policy=default_policy)
-            refs = set(_ids(h["In-Reply-To"]) + _ids(h["References"]))
-            sender = parseaddr(str(h["From"] or ""))[1].lower()
-            if refs & our_ids or sender in our_to or _BOUNCER.search(str(h["From"] or "")):
-                wanted.append(item[0].split()[0])
-        for num in wanted:
-            _, msg = imap.fetch(num, "(BODY.PEEK[])")
+        for i in range(0, len(uids), BATCH):
+            _, heads = imap.uid("FETCH", b",".join(uids[i : i + BATCH]),
+                                f"(UID BODY.PEEK[HEADER.FIELDS {fields}])")  # fmt: skip
+            for item in heads:
+                if not isinstance(item, tuple):
+                    continue
+                uid = re.search(rb"UID (\d+)", item[0])
+                h = email.message_from_bytes(item[1], policy=default_policy)
+                refs = set(_ids(h["In-Reply-To"]) + _ids(h["References"]))
+                sender = parseaddr(str(h["From"] or ""))[1].lower()
+                if uid and (
+                    refs & our_ids or sender in our_to or _BOUNCER.search(str(h["From"] or ""))
+                ):
+                    wanted.append(uid.group(1))
+        for uid in wanted:
+            _, msg = imap.uid("FETCH", uid, "(BODY.PEEK[])")
             em = email.message_from_bytes(msg[0][1], policy=default_policy)
             what = handle(s, em)
             if what:
                 counts[what] = counts.get(what, 0) + 1
                 s.flush()
+    seen = max([int(u) for u in uids], default=0)
+    state.update(uidvalidity=validity, last_ok=now(),
+                 last_uid=max(seen, last_uid if validity == state.get("uidvalidity") else 0))  # fmt: skip
+    if full:
+        state["last_full"] = now()
+        _FULL_DONE["since_start"] = True
+    set_setting(s, "inbox_state", state)
     return counts

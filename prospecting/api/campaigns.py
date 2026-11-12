@@ -22,6 +22,7 @@ from prospecting.db import (
 )  # fmt: skip
 from prospecting.languages import LANGUAGES, of_lead
 from prospecting.mailer import MailError
+from prospecting.translations import followup_translations
 from prospecting.outreach import summary
 
 router = APIRouter(prefix="/api")
@@ -47,9 +48,29 @@ def _config(s, c: Campaign) -> dict[str, Any]:
         "excluded": c.excluded or [], "included": c.included or [], "daily_cap": c.daily_cap or 20,
         "review": c.review or "daily", "metric": c.metric or "reply",
         "start_on": c.start_on, "followups_on": c.followups_on is not False,
+        "followup_days": C.days_of(c, 1), "followup": _followup(C.followup_of(s, c, 1)),
+        "followup_default": _default(1),
+        "followup2_on": c.followup2_on is not False, "followup2_days": C.days_of(c, 2),
+        "followup2": _followup(C.followup_of(s, c, 2)), "followup2_default": _default(2),
+        "close_on": c.close_on is not False, "close_days": C.close_days_of(c),
         "started_at": c.started_at, "ended_at": c.ended_at, "created_at": c.created_at,
         "versions": [_version(t, i) for i, t in enumerate(C.versions(s, c))],
     }  # fmt: skip
+
+
+def _default(step: int) -> dict[str, Any]:
+    """The ready-made text of follow-up 1 or 2, in every language."""
+    return {"language": "fr", "body": C.FOLLOWUP_BODY if step == 1 else C.FOLLOWUP2_BODY,
+            "translations": {k: v["body"] for k, v in followup_translations(step).items()}}  # fmt: skip
+
+
+def _followup(t: Template | None) -> dict[str, Any] | None:
+    """The follow-up text: {language, body, translations: {lang: body}} (its subject is
+    always "Re: " + the first email's)."""
+    if t is None:
+        return None
+    return {"language": t.language or "fr", "body": t.body,
+            "translations": {k: x.get("body", "") for k, x in (t.translations or {}).items()}}  # fmt: skip
 
 
 def _card(s, c: Campaign) -> dict[str, Any]:
@@ -188,6 +209,12 @@ class VersionIn(BaseModel):
     translations: dict[str, dict[str, str]] = {}
 
 
+class FollowupIn(BaseModel):
+    language: str = "fr"  # of body
+    body: str = ""
+    translations: dict[str, str] = {}  # lang → text
+
+
 class CampaignIn(BaseModel):
     name: str | None = None
     kind: str | None = None
@@ -201,7 +228,67 @@ class CampaignIn(BaseModel):
     metric: str | None = None
     start_on: str | None = None
     followups_on: bool | None = None
+    followup_days: int | None = None
+    followup: FollowupIn | None = None  # can change on a started campaign
+    followup2_on: bool | None = None
+    followup2_days: int | None = None
+    followup2: FollowupIn | None = None
+    close_on: bool | None = None  # mark "No reply" those who never answered…
+    close_days: int | None = None  # …this many days after the last email
     versions: list[VersionIn] | None = None
+
+
+def _apply_followups(s, c: Campaign, b: CampaignIn) -> None:
+    """The follow-up automations: on/off, delay, text. They can change any time; follow-ups
+    written but not sent yet are then written again as they now are (or not, if off)."""
+    for step in C.STEPS:
+        on, days, text = (b.followups_on, b.followup_days, b.followup) if step == 1 \
+            else (b.followup2_on, b.followup2_days, b.followup2)
+        changed = False
+        if on is not None:
+            changed |= on != C.is_on(c, step) if step == 1 else on != (c.followup2_on is not False)
+            if step == 1:
+                c.followups_on = on
+            else:
+                c.followup2_on = on
+        if days is not None:
+            if not 1 <= days <= 30:
+                raise HTTPException(422, f"Follow-up {step} goes out 1 to 30 days after the email before it.")
+            changed |= days != C.days_of(c, step)
+            if step == 1:
+                c.followup_days = days
+            else:
+                c.followup2_days = days
+        if text is not None:
+            if text.language not in LANGUAGES:
+                raise HTTPException(422, "Unknown language")
+            if not text.body.strip():
+                raise HTTPException(422, f"Write the text of follow-up {step} first.")
+            old = C.followup_of(s, c, step)
+            new_tr = {k: {"subject": "Re:", "body": v} for k, v in text.translations.items()}
+            changed |= old is None or old.body != text.body or (old.language or "fr") != text.language \
+                or {k: x.get("body") for k, x in (old.translations or {}).items()} != \
+                {k: v for k, v in text.translations.items() if v.strip()}
+            C.set_followup(s, c, text.language, text.body, new_tr, step)
+        if changed:
+            C.unwrite_waiting(s, c, step)
+            if step == 1 and not C.is_on(c, 1):  # follow-up 2 hangs on follow-up 1
+                C.unwrite_waiting(s, c, 2)
+
+
+def _only_translations(s, c: Campaign, vs: list[VersionIn]) -> bool:
+    """True when these versions are the campaign's own, unchanged but for their
+    translations (which a started campaign may still change: leads who speak a newly
+    written language can then be added)."""
+    have = {t.id: t for t in C.versions(s, c)}
+    if {v.id for v in vs} != set(have):
+        return False
+    return all(
+        (t := have[v.id]).subject == v.subject and t.body == v.body
+        and (t.language or "fr") == v.language and list(t.asset_ids or []) == list(v.asset_ids)
+        and bool(t.attach_photo) == v.attach_photo
+        for v in vs
+    )
 
 
 def _apply(s, c: Campaign, b: CampaignIn) -> None:
@@ -214,13 +301,23 @@ def _apply(s, c: Campaign, b: CampaignIn) -> None:
         if b.review not in ("daily", "auto"):
             raise HTTPException(422, "review is daily or auto")
         c.review = b.review
-    if b.followups_on is not None:
-        c.followups_on = b.followups_on
+    _apply_followups(s, c, b)
+    if b.close_on is not None:
+        c.close_on = b.close_on
+    if b.close_days is not None:
+        if not 1 <= b.close_days <= 90:
+            raise HTTPException(422, "\"No reply\" comes 1 to 90 days after the last email.")
+        c.close_days = b.close_days
     if b.start_on is not None:
         try:
             c.start_on = date.fromisoformat(b.start_on).isoformat() if b.start_on else None
         except ValueError as e:
             raise HTTPException(422, "The start date isn't a date") from e
+    if b.versions is not None and not draft and _only_translations(s, c, b.versions):
+        for v in b.versions:
+            t = s.get(Template, v.id)
+            t.translations = C.clean_translations(v.translations, t.language or "fr")
+        b.versions = None
     locked = [k for k in ("kind", "filters", "order", "excluded", "included", "metric", "versions")
               if getattr(b, k) is not None]  # fmt: skip
     if locked and not draft:
@@ -290,6 +387,14 @@ def create(b: CampaignIn) -> dict[str, Any]:
             ).first()  # fmt: skip
             C.new_version(s, c, "A", t.subject if t else "", t.body if t else "Bonjour {prenom},\n\n\n\n{signature}",
                           list(t.asset_ids or []) if t else [], bool(t and t.attach_photo))  # fmt: skip
+        if b.followup is None:  # the follow-ups ready to edit, in every language
+            C.set_followup(s, c, "fr", C.FOLLOWUP_BODY, followup_translations(1), 1)
+        if b.followup2 is None:
+            C.set_followup(s, c, "fr", C.FOLLOWUP2_BODY, followup_translations(2), 2)
+        c.followup_days = c.followup_days or C.FOLLOWUP_DAYS
+        c.followup2_days = c.followup2_days or C.FOLLOWUP2_DAYS
+        c.followup2_on = c.followup2_on is not False
+        c.close_on, c.close_days = c.close_on is not False, c.close_days or C.CLOSE_DAYS
         s.commit()
         return _config(s, c)
 
@@ -301,6 +406,9 @@ def get_one(campaign_id: int) -> dict[str, Any]:
         out = _config(s, c)
         if c.status != "draft":
             out["results"] = C.results(s, c)
+            out["followup_status"] = C.followup_status(s, c, 1)
+            out["followup2_status"] = C.followup_status(s, c, 2)
+            out["close_status"] = C.close_status(s, c)
         out["mailbox"] = mailbox_status(s)
         return out
 
@@ -320,8 +428,9 @@ def delete(campaign_id: int) -> dict[str, Any]:
         c = _get(s, campaign_id)
         if c.status != "draft":
             raise HTTPException(409, "Only a draft can be deleted. Pause a started campaign instead.")
-        for t in C.versions(s, c):
-            t.archived = True
+        for t in [*C.versions(s, c), *(C.followup_of(s, c, k) for k in C.STEPS)]:
+            if t is not None:
+                t.archived = True
         s.delete(c)
         s.commit()
         return {"deleted": campaign_id}
@@ -333,12 +442,19 @@ def duplicate(campaign_id: int) -> dict[str, Any]:
         c = _get(s, campaign_id)
         d = Campaign(name=f"{c.name} (copy)", kind=c.kind, filters=dict(c.filters or {}),
                      size=c.size, lead_order=c.lead_order, excluded=[], daily_cap=c.daily_cap,
-                     review=c.review, metric=c.metric, followups_on=c.followups_on, status="draft")  # fmt: skip
+                     review=c.review, metric=c.metric, followups_on=c.followups_on, status="draft",
+                     followup_days=C.days_of(c, 1), followup2_days=C.days_of(c, 2),
+                     followup2_on=c.followup2_on is not False, close_on=c.close_on is not False,
+                     close_days=C.close_days_of(c))  # fmt: skip
         s.add(d)
         s.flush()
         for t in C.versions(s, c):
             C.new_version(s, d, t.name, t.subject, t.body, list(t.asset_ids or []), t.attach_photo,
                           t.language or "fr", dict(t.translations or {}))  # fmt: skip
+        for step in C.STEPS:
+            fu = C.followup_of(s, c, step)
+            if fu is not None:
+                C.set_followup(s, d, fu.language or "fr", fu.body, dict(fu.translations or {}), step)
         s.commit()
         return _config(s, d)
 

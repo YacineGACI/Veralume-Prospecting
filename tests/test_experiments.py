@@ -185,10 +185,10 @@ def test_outcomes_ignore_history_before_campaign_email(db):
                     sent_at="2026-11-05T14:11:41+00:00"),
         ])
         s.flush()
-        assert experiments._outcomes(s, {lid: first})[lid] == {
+        assert experiments._report_outcomes(s, {lid: first})[lid] == {
             "reply": False, "interested": False, "stopped": False,
         }
         s.add(Message(lead_id=lid, direction="in", status="received", body="New reply",
                       sent_at="2026-11-06T19:02:06+00:00"))
         s.flush()
-        assert experiments._outcomes(s, {lid: first})[lid]["reply"]
+        assert experiments._report_outcomes(s, {lid: first})[lid]["reply"]

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from prospecting import languages, pilot
 from prospecting.config import settings
 from prospecting.contacts import shared_contacts, usable_emails
-from prospecting.db import Activity, Campaign, Lead, Message, Photo, Setting, Template, now
+from prospecting.db import Activity, Lead, Message, Photo, Setting, Template, now
 from prospecting.text import host
 
 TZ = ZoneInfo(settings.timezone)
@@ -127,6 +127,20 @@ def in_window(dt: datetime | None = None) -> bool:
     dt = dt or local()
     start, end = settings.send_hours
     return dt.weekday() in settings.send_weekdays and start <= dt.hour < end
+
+
+def first_slot(dt: datetime) -> datetime:
+    """`dt`, or the start of the next sending hours if it falls outside them (evening,
+    weekend): when something due at `dt` actually goes out."""
+    dt = local(iso(dt))
+    start, end = settings.send_hours
+    if dt.hour >= end:
+        dt = day_start(dt) + timedelta(days=1, hours=start)
+    elif dt.hour < start:
+        dt = day_start(dt) + timedelta(hours=start)
+    while dt.weekday() not in settings.send_weekdays:
+        dt = day_start(dt) + timedelta(days=1, hours=start)
+    return dt
 
 
 def morning(days_from_now: int) -> datetime:
@@ -431,9 +445,8 @@ def send(s: Session, msg: Message, followups: bool = True) -> Message:
     """Send one outbound message now (within the daily cap) and record what follows.
     The caller commits."""
     lead = s.get(Lead, msg.lead_id)
-    if followups and msg.campaign_id:  # a campaign can go without follow-ups
-        camp = s.get(Campaign, msg.campaign_id)
-        followups = not (camp and camp.followups_on is False)
+    if msg.campaign_id:  # a campaign writes its own follow-up when it's due (campaigns.py)
+        followups = False
     if lead is None or lead.do_not_contact:
         msg.status, msg.error = "cancelled", "do not contact"
         raise MailError("This lead asked not to be contacted.")

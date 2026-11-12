@@ -6,8 +6,10 @@ in sending order) and hands out the versions in equal shares, at random. With tw
 versions, the campaign owns an A/B test (an Experiment) analysed like any other.
 
 Each working morning the next batch is written: waiting in Today for your approval
-(review "daily"), or approved at once (review "auto"). Follow-ups, when on, are written
-after each first email and always wait for you.
+(review "daily"), or approved at once (review "auto"). The follow-up, when on, goes out on
+its own `followup_days` after a first email that got no reply, in the same language and
+the same thread. It's worked out from dates each time the worker runs, so follow-ups
+missed while the app was off go out once it's back (inside the sending hours).
 """
 
 from __future__ import annotations
@@ -22,10 +24,10 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from prospecting import experiments, languages, mailer
+from prospecting import experiments, languages, mailer, translations
 from prospecting.contacts import shared_contacts, usable_emails, usable_phones
 from prospecting.db import (
-    Campaign, CampaignLead, Experiment, Lead, Message, Template, now,
+    Activity, Campaign, CampaignLead, Experiment, Lead, Message, Template, now,
 )  # fmt: skip
 from prospecting.mailer import day_start, iso, local
 from prospecting.text import email_is_personal
@@ -44,8 +46,10 @@ class CampaignError(Exception):
 
 
 def versions(s: Session, c: Campaign) -> list[Template]:
+    """The first-email versions (step 0); the follow-up is apart (followup_of)."""
     return list(s.scalars(
-        select(Template).where(Template.campaign_id == c.id, Template.archived.is_(False))
+        select(Template).where(Template.campaign_id == c.id, Template.archived.is_(False),
+                               Template.step == 0)
         .order_by(Template.id)
     ))  # fmt: skip
 
@@ -343,6 +347,10 @@ def start(s: Session, c: Campaign) -> int:
     for t in tpls:
         if not t.subject.strip() or not t.body.strip():
             raise CampaignError(f"Version “{t.name}” needs a subject and a text.")
+    for step in STEPS:
+        fu = followup_of(s, c, step)
+        if is_on(c, step) and (fu is None or not fu.body.strip()):
+            raise CampaignError(f"Set the automations first (step 3): write follow-up {step}, or turn it off.")
     leads, _ = audience(s, c)
     if not leads:
         raise CampaignError("No lead matches. Loosen the filters in step 1.")
@@ -439,6 +447,12 @@ def email_for(s: Session, c: Campaign, lead_id: int) -> Message:
         raise CampaignError("Already sent to this lead.")
     if m is not None:
         if m.status == "failed":
+            if m.error == "bounced":  # that address doesn't exist: another of theirs, or none
+                other = next(iter(usable_emails(lead, shared_contacts()[0])), None)
+                if other is None:
+                    raise CampaignError(f"{lead.name}'s address bounced and they have no other. "
+                                        "Find their own address on their site and add it in their file.")  # fmt: skip
+                m.to_addr = other
             m.status, m.error = "queued", None  # try again
         return m
     why = _why_unwritable(s, row, lead, shared_contacts()[0])
@@ -531,13 +545,14 @@ def _letter(i: int) -> str:
 
 def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
     tpls = versions(s, c)
+    se = shared_contacts()[0]
     letters = {t.id: _letter(i) for i, t in enumerate(tpls)}
     rows = list(s.scalars(
         select(CampaignLead).where(CampaignLead.campaign_id == c.id).order_by(CampaignLead.rank)
     ))  # fmt: skip
     written = _written(s, c)
     sent = {lid: m for lid, m in written.items() if m.status == "sent"}
-    outcome = experiments._outcomes(s, sent)
+    outcome = experiments._report_outcomes(s, sent)
     leads = {l.id: l for l in s.scalars(select(Lead).where(Lead.id.in_([r.lead_id for r in rows])))} if rows else {}
     replies: dict[int, Message] = {}
     if sent:
@@ -549,6 +564,13 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
                 local(m.sent_at) >= local(sent[m.lead_id].sent_at)
             ):
                 replies[m.lead_id] = m
+    followed: dict[int, tuple[int, str]] = {}  # lead → (last follow-up sent, when)
+    for lid, step, at in s.execute(
+        select(Message.lead_id, Message.step, Message.sent_at).where(
+            Message.campaign_id == c.id, Message.step.in_(STEPS), Message.status == "sent")
+        .order_by(Message.step)
+    ):  # fmt: skip
+        followed[lid] = (step, at)
 
     def state(row: CampaignLead) -> tuple[str, str | None]:
         m = written.get(row.lead_id)
@@ -560,6 +582,9 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
         if m.status in ("queued", "approved"):
             return ("to_review" if m.status == "queued" else "approved"), m.due_at
         if m.status == "failed":
+            if m.error == "bounced":  # sendable again only to another address of theirs
+                other = lead is not None and bool(usable_emails(lead, se))
+                return ("bounced_retry" if other else "bounced"), m.sent_at or m.due_at
             return "failed", m.due_at
         o = outcome.get(row.lead_id, {})
         if o.get("stopped"):
@@ -568,6 +593,11 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
             return "interested", m.sent_at
         if o.get("reply"):
             return "replied", (replies.get(row.lead_id) or m).sent_at
+        if lead and lead.status == "no_reply":
+            return "no_reply", m.sent_at
+        if row.lead_id in followed:
+            step, at = followed[row.lead_id]
+            return ("followed_up" if step == 1 else "followed_up_2"), at
         return "waiting", m.sent_at
 
     states = [(r, *state(r)) for r in rows]
@@ -577,8 +607,9 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
         "leads": len(rows), "sent": len(sent), "to_review": count["to_review"],
         "approved": count["approved"], "not_sent": count["not_sent"],
         "replied": replied, "interested": count["interested"], "stopped": count["stopped"],
-        "skipped": count["skipped"], "failed": count["failed"],
+        "skipped": count["skipped"], "failed": count["failed"], "no_reply": count["no_reply"],
         "pilots": sum(1 for l in leads.values() if l.pilot_stage),
+        "bounced": count["bounced"] + count["bounced_retry"],
     }  # fmt: skip
 
     # Versions: the campaign's A/B test, or the one email's own numbers.
@@ -677,4 +708,247 @@ def clean_translations(tr: dict[str, Any] | None, main: str) -> dict[str, dict[s
     for lang, x in (tr or {}).items():
         if lang in languages.LANGUAGES and lang != main and isinstance(x, dict):
             out[lang] = {"subject": str(x.get("subject") or ""), "body": str(x.get("body") or "")}
+    return out
+
+
+# --- the follow-ups (automations) ------------------------------------------------------------
+# Follow-up 1 goes `followup_days` after the first email; follow-up 2, the last one,
+# `followup2_days` after follow-up 1. Each only to those who haven't replied, in the first
+# email's language, in its thread, without images. Their texts: templates with step 1 and 2.
+
+STEPS = (1, 2)
+FOLLOWUP_DAYS = 7
+FOLLOWUP2_DAYS = 10
+FOLLOWUP_BODY = translations.FOLLOWUP["fr"]  # in every language: translations.FOLLOWUP
+FOLLOWUP2_BODY = translations.FOLLOWUP2["fr"]
+_RE = "Re:"  # a follow-up's subject is "Re: <the first email's>"; this marks a written language
+
+
+def followup_of(s: Session, c: Campaign, step: int = 1) -> Template | None:
+    return s.scalars(
+        select(Template).where(Template.campaign_id == c.id, Template.step == step,
+                               Template.archived.is_(False)).order_by(Template.id.desc())
+    ).first()  # fmt: skip
+
+
+def days_of(c: Campaign, step: int = 1) -> int:
+    return (c.followup_days or FOLLOWUP_DAYS) if step == 1 else (c.followup2_days or FOLLOWUP2_DAYS)
+
+
+def is_on(c: Campaign, step: int = 1) -> bool:
+    """Follow-up 2 follows follow-up 1: off when follow-up 1 is."""
+    one = c.followups_on is not False
+    return one if step == 1 else one and c.followup2_on is not False
+
+
+def set_followup(s: Session, c: Campaign, language: str, body: str,
+                 trans: dict[str, Any] | None, step: int = 1) -> Template:  # fmt: skip
+    """Save a follow-up's text (main language + translations; only the text, the subject
+    is always the first email's with "Re:")."""
+    tr = {k: {"subject": _RE, "body": x["body"]}
+          for k, x in clean_translations(trans, language).items() if x["body"].strip()}  # fmt: skip
+    t = followup_of(s, c, step)
+    if t is None:
+        t = Template(key=f"camp{c.id}_fu{step}_{uuid.uuid4().hex[:6]}",
+                     name="Follow-up" if step == 1 else "Follow-up 2", segment=c.kind, step=step,
+                     subject=_RE, body=body, attach_photo=False, asset_ids=[], campaign_id=c.id,
+                     language=language, translations=tr)  # fmt: skip
+        s.add(t)
+        s.flush()
+    else:
+        t.body, t.language, t.translations, t.subject = body, language, tr, _RE
+    return t
+
+
+def unwrite_waiting(s: Session, c: Campaign, step: int) -> int:
+    """Forget the follow-ups written but not sent yet (switched off, new text or delay):
+    they're written again, as they now are, when due."""
+    rows = list(s.scalars(
+        select(Message).where(Message.campaign_id == c.id, Message.step == step,
+                              Message.direction == "out", Message.status.in_(("queued", "approved")))
+    ))  # fmt: skip
+    for m in rows:
+        s.delete(m)
+    return len(rows)
+
+
+def _followup_rows(s: Session, c: Campaign, step: int = 1) -> list[tuple[Message, str]]:
+    """Each lead's sent email before this step (the first email, or follow-up 1), with what
+    happens to this follow-up: "sent", "waiting" (written, goes out at the next free slot),
+    "cancelled", "due" (to write now), "later" (not yet the day), "replied", "language" (not
+    written in theirs) or "off"."""
+    bases = {m.lead_id: m for m in s.scalars(
+        select(Message).where(Message.campaign_id == c.id, Message.step == step - 1,
+                              Message.direction == "out", Message.status == "sent")
+        .order_by(Message.id.desc())
+    )}  # fmt: skip
+    if not bases:
+        return []
+    mine: dict[int, Message] = {}
+    for m in s.scalars(
+        select(Message).where(Message.campaign_id == c.id, Message.step == step,
+                              Message.direction == "out").order_by(Message.id)
+    ):  # fmt: skip
+        mine[m.lead_id] = m
+    ids = set(bases)
+    outcome = experiments._outcomes(s, ids)
+    leads = {l.id: l for l in s.scalars(select(Lead).where(Lead.id.in_(ids)))}
+    # Anything else written to them since (by hand, a reply of yours…).
+    later_out = {
+        lid: at for lid, at in s.execute(
+            select(Message.lead_id, func.max(Message.sent_at))
+            .where(Message.lead_id.in_(ids), Message.direction == "out",
+                   Message.status == "sent", Message.step != step)
+            .group_by(Message.lead_id)
+        )
+    }  # fmt: skip
+    fu = followup_of(s, c, step)
+    langs = set(mailer.languages_of(fu)) if fu else set()
+    due_by = local() - timedelta(days=days_of(c, step))
+    out = []
+    for lid, base in bases.items():
+        m = mine.get(lid)
+        lead = leads.get(lid)
+        if m is not None:
+            what = {"sent": "sent", "approved": "waiting", "queued": "waiting"}.get(m.status, "cancelled")
+        elif lead is None or lead.do_not_contact or lead.status in ("lost", "customer") \
+                or outcome.get(lid, {}).get("reply") or (later_out.get(lid) or "") > (base.sent_at or ""):
+            what = "replied"
+        elif fu is None or not fu.body.strip() or not is_on(c, step) or c.status not in ("running", "done"):
+            what = "off"
+        elif (base.language or "fr") not in langs:
+            what = "language"
+        else:
+            what = "due" if local(base.sent_at) <= due_by else "later"
+        out.append((base, what))
+    return out
+
+
+def followup_due_at(c: Campaign, base: Message, step: int = 1) -> str:
+    """When it goes out: its delay after the email before it, moved to the next sending
+    hours when that falls on an evening or a weekend."""
+    due = max(local(base.sent_at) + timedelta(days=days_of(c, step)), local())  # due already: now
+    return iso(mailer.first_slot(due))
+
+
+def write_due_followups(s: Session) -> int:
+    """Write every follow-up whose day has come (approved: the worker sends them one by one
+    inside the sending hours, under the daily cap). The caller commits."""
+    n = 0
+    for c in s.scalars(select(Campaign).where(Campaign.status.in_(("running", "done")),
+                                              Campaign.followups_on.isnot(False))):  # fmt: skip
+        for step in STEPS:
+            fu = followup_of(s, c, step)
+            if fu is None or not is_on(c, step):
+                continue
+            for base, what in _followup_rows(s, c, step):
+                if what != "due":
+                    continue
+                lead = s.get(Lead, base.lead_id)
+                d = mailer.draft(s, lead, fu, base.language or "fr")
+                subj = base.subject if base.subject.lower().startswith("re:") else f"Re: {base.subject}"
+                mailer.new_outbound(
+                    s, lead, subject=subj, body=d["body"], to=base.to_addr, step=step,
+                    template_id=fu.id, campaign_id=c.id, language=d["language"],
+                    in_reply_to=base.message_id, status="approved", asset_ids=[],
+                    experiment_id=base.experiment_id,
+                )  # fmt: skip
+                n += 1
+    return n
+
+
+# --- "No reply": the campaign is over for those who never answered ------------------------
+
+CLOSE_DAYS = 15
+
+
+def close_days_of(c: Campaign) -> int:
+    return c.close_days or CLOSE_DAYS
+
+
+def _silent(s: Session, c: Campaign) -> list[tuple[Lead, Message]]:
+    """Leads of this campaign still "contacted" with nothing more to come from it (no email
+    waiting, no follow-up planned), each with the last email it got from the campaign."""
+    coming: set[int] = set()
+    for step in STEPS:
+        coming |= {b.lead_id for b, w in _followup_rows(s, c, step) if w in ("later", "due", "waiting")}
+    last: dict[int, Message] = {}
+    for m in s.scalars(
+        select(Message).where(Message.campaign_id == c.id, Message.direction == "out",
+                              Message.status == "sent").order_by(Message.sent_at)
+    ):  # fmt: skip
+        last[m.lead_id] = m
+    pending = set(s.scalars(
+        select(Message.lead_id).where(Message.lead_id.in_(list(last)), Message.direction == "out",
+                                      Message.status.in_(("queued", "approved")))
+    )) if last else set()  # fmt: skip
+    outcome = experiments._outcomes(s, set(last))
+    out = []
+    for lead in s.scalars(select(Lead).where(Lead.id.in_(list(last)))) if last else []:
+        if lead.status != "contacted" or lead.do_not_contact or lead.id in coming or lead.id in pending \
+                or outcome.get(lead.id, {}).get("reply"):
+            continue
+        out.append((lead, last[lead.id]))
+    return out
+
+
+def close_silent(s: Session) -> int:
+    """Mark "no_reply" the leads who never answered any of a campaign's emails, `close_days`
+    after the last one (when no follow-up is still to come). The caller commits."""
+    n = 0
+    for c in s.scalars(select(Campaign).where(Campaign.status.in_(("running", "done")),
+                                              Campaign.close_on.isnot(False))):  # fmt: skip
+        by = local() - timedelta(days=close_days_of(c))
+        for lead, m in _silent(s, c):
+            if local(m.sent_at) > by:
+                continue
+            emails = s.scalar(select(func.count(Message.id)).where(
+                Message.campaign_id == c.id, Message.lead_id == lead.id,
+                Message.direction == "out", Message.status == "sent")) or 0  # fmt: skip
+            s.add(Activity(lead_id=lead.id, kind="status",
+                           text=f"contacted → no reply: no answer to {emails} email{'s' if emails > 1 else ''} "
+                                f"of “{c.name}”"))  # fmt: skip
+            lead.status = "no_reply"
+            n += 1
+    return n
+
+
+def close_status(s: Session, c: Campaign) -> dict[str, Any]:
+    """For the campaign page: how many were marked "No reply", and when the next ones are."""
+    done = s.scalar(select(func.count(CampaignLead.id)).join(Lead, Lead.id == CampaignLead.lead_id)
+                    .where(CampaignLead.campaign_id == c.id, Lead.status == "no_reply")) or 0  # fmt: skip
+    nxt = sorted(iso(max(local(m.sent_at) + timedelta(days=close_days_of(c)), local())) for _, m in _silent(s, c))
+    return {"done": done, "later": len(nxt), "next_at": nxt[0] if nxt else None}
+
+
+def followup_status(s: Session, c: Campaign, step: int = 1) -> dict[str, Any]:
+    """For the campaign page: how this follow-up goes, and who won't get it."""
+    rows = _followup_rows(s, c, step)
+    count = Counter(w for _, w in rows)
+    coming = sorted(followup_due_at(c, b, step) for b, w in rows if w in ("later", "due"))
+    missing: Counter[str] = Counter((b.language or "fr") for b, w in rows if w == "language")
+    return {
+        "sent": count["sent"], "waiting": count["waiting"] + count["due"],
+        "later": count["later"], "next_at": coming[0] if coming else None,
+        "replied": count["replied"], "cancelled": count["cancelled"],
+        "missing": dict(missing),
+    }
+
+
+def followup_plan(s: Session, lead_id: int) -> list[dict[str, Any]]:
+    """The follow-ups still to come for this lead (the next one per campaign), with their day."""
+    out = []
+    cids = set(s.scalars(
+        select(Message.campaign_id).where(Message.lead_id == lead_id, Message.step == 0,
+                                          Message.status == "sent", Message.campaign_id.isnot(None))
+    ))  # fmt: skip
+    for cid in cids:
+        c = s.get(Campaign, cid)
+        if c is None:
+            continue
+        for step in STEPS:
+            row = next(((b, w) for b, w in _followup_rows(s, c, step) if b.lead_id == lead_id), None)
+            if row and row[1] in ("later", "due"):
+                out.append({"campaign_id": c.id, "campaign": c.name, "step": step,
+                            "due_at": followup_due_at(c, row[0], step), "language": row[0].language or "fr"})  # fmt: skip
     return out
