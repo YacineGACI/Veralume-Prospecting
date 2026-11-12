@@ -317,7 +317,7 @@ def inbox(days: Annotated[int, typer.Option(help="How many days back to read")] 
     from prospecting import inbox as inbox_mod
 
     with session() as s:
-        found = inbox_mod.poll(s, days=days)
+        found = inbox_mod.poll(s, days=days, full=True)
         s.commit()
     typer.echo(f"found: {found or 'nothing new'}")
 
