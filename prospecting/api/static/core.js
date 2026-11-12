@@ -6,7 +6,7 @@ export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&a
 
 export const KIND = { agency: "Agency", independent_agent: "Independent agent", photographer: "Photographer", other: "Other" };
 export const KINDS_PL = { photographer: "Photographers", agency: "Agencies", independent_agent: "Independent agents" };
-export const STATUS = { new: "New", shortlisted: "Shortlisted", contacted: "Contacted", replied: "Replied", interview: "Interview", pilot: "Pilot", customer: "Customer", lost: "Lost" };
+export const STATUS = { new: "New", shortlisted: "Shortlisted", contacted: "Contacted", replied: "Replied", interview: "Interview", pilot: "Pilot", customer: "Customer", no_reply: "No reply", lost: "Lost" };
 export const STAGES = ["new", "contacted", "replied", "interview", "pilot", "customer"];
 export const STEP = { 0: "First email", 1: "Follow-up 1", 2: "Follow-up 2", "-1": "Reply" };
 export const SMALL_NEW = { new_business: "new business", sole_trader: "one-person business", recent_profile: "recent profile", few_reviews: "few reviews yet", social_only: "Instagram / Facebook only" };

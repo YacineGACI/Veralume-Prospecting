@@ -273,3 +273,91 @@ def test_switching_off_or_editing_rewrites_the_followups_not_sent_yet(db):
     client.put(f"/api/campaigns/{cid}", json={"followup_days": 20})
     with db() as s:
         assert _followups_step(s, cid, 1) == [] and C.write_due_followups(s) == 0
+
+
+# --- "No reply": the campaign is over for those who never answered ----------------------
+
+
+def _all_sent(db, n_de=0):
+    """First email 40 days ago, follow-up 1 30 days ago, follow-up 2 20 days ago: all silent."""
+    cid, fr, de = _sent(db, n_de=n_de, days_ago=40)
+    with db() as s:
+        C.write_due_followups(s)
+        s.commit()
+    _send_all(db, cid, 1, days_ago=30)
+    with db() as s:
+        C.write_due_followups(s)
+        s.commit()
+    _send_all(db, cid, 2, days_ago=20)
+    return cid, fr, de
+
+
+def test_silent_after_every_email_become_no_reply(db):
+    cid, fr, de = _all_sent(db)
+    c = client.get(f"/api/campaigns/{cid}").json()
+    assert c["close_on"] is True and c["close_days"] == 15
+    with db() as s:
+        assert C.close_silent(s) == 3
+        s.commit()
+        lead = s.get(Lead, fr[0])
+        assert lead.status == "no_reply" and not lead.do_not_contact  # not blocked: can be tried again
+        assert C.close_silent(s) == 0
+        from prospecting.db import Activity
+
+        note = s.scalars(select(Activity).where(Activity.lead_id == fr[0], Activity.kind == "status")
+                         .order_by(Activity.id.desc())).first().text  # fmt: skip
+        assert "no answer to 3 emails" in note
+    r = client.get(f"/api/campaigns/{cid}").json()
+    assert r["close_status"]["done"] == 3 and r["results"]["totals"]["no_reply"] == 3
+    assert {l["state"] for l in r["results"]["leads"] if l["id"] in fr} == {"no_reply"}
+    assert client.get("/api/pipeline").json()["counts"]["no_reply"] == 3
+
+
+def test_a_late_reply_still_moves_them_to_replied(db):
+    from email.message import EmailMessage
+
+    from prospecting import inbox
+
+    cid, fr, de = _all_sent(db)
+    with db() as s:
+        C.close_silent(s)
+        s.commit()
+        first = s.scalars(select(Message).where(Message.lead_id == fr[0], Message.step == 0)).first()
+        em = EmailMessage()
+        em["From"], em["To"], em["Subject"] = first.to_addr, "moi@veralume.test", "Re: votre email"
+        em["Message-ID"], em["In-Reply-To"] = "<late@x>", first.message_id
+        em.set_content("Bonjour, désolé du retard, oui je suis intéressé !")
+        assert inbox.handle(s, em) == "reply"
+        s.commit()
+        assert s.get(Lead, fr[0]).status == "replied"
+
+
+def test_no_reply_waits_its_days_and_for_every_followup(db):
+    cid, fr, de = _sent(db, n_de=0, days_ago=40)
+    with db() as s:
+        assert C.close_silent(s) == 0  # follow-up 1 is still to come (due)
+        C.write_due_followups(s)
+        s.commit()
+        assert C.close_silent(s) == 0  # written, waiting to go out
+    _send_all(db, cid, 1, days_ago=5)
+    with db() as s:
+        assert C.close_silent(s) == 0  # follow-up 2 is planned
+    client.put(f"/api/campaigns/{cid}", json={"followup2_on": False})
+    with db() as s:
+        assert C.close_silent(s) == 0  # 5 days after the last email: not yet 15
+    st = client.get(f"/api/campaigns/{cid}").json()["close_status"]
+    assert st["later"] == 3 and st["next_at"]
+    client.put(f"/api/campaigns/{cid}", json={"close_days": 4})
+    with db() as s:
+        assert C.close_silent(s) == 3
+
+
+def test_no_reply_off_and_counted_from_the_first_email_without_followups(db):
+    cid, fr, de = _sent(db, n_de=0, days_ago=20)
+    client.put(f"/api/campaigns/{cid}", json={"followups_on": False, "close_on": False})
+    with db() as s:
+        assert C.close_silent(s) == 0
+    assert client.put(f"/api/campaigns/{cid}", json={"close_days": 0}).status_code == 422
+    client.put(f"/api/campaigns/{cid}", json={"close_on": True})
+    with db() as s:
+        assert C.close_silent(s) == 3  # 20 days after the first email, nothing else to come

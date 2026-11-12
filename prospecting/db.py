@@ -26,6 +26,7 @@ STATUSES = (
     "interview",
     "pilot",
     "customer",
+    "no_reply",  # a campaign's emails all went unanswered (not a "no": they can be tried again)
     "lost",
 )
 ACTIVITY_KINDS = (
@@ -294,6 +295,9 @@ class Campaign(Base):
     # haven't replied (its text: the template with step 2). Empty means on, after 10 days.
     followup2_on: Mapped[bool | None] = mapped_column(Boolean, default=True)
     followup2_days: Mapped[int | None] = mapped_column(Integer, default=10)
+    # Then, this many days after the last email, those who never answered become "no_reply".
+    close_on: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    close_days: Mapped[int | None] = mapped_column(Integer, default=15)
     started_at: Mapped[str | None] = mapped_column(String(32))
     ended_at: Mapped[str | None] = mapped_column(String(32))
     experiment_id: Mapped[int | None] = mapped_column(Integer)

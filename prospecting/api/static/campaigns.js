@@ -39,7 +39,21 @@ const fuOf = (c, k) => c[FU[k].text] || structuredClone(c[FU[k].def] || { langua
 const fuText = (fu, l) => (l === (fu.language || "fr") ? fu.body : fu.translations?.[l] || "");
 const fuMissing = (c, k) => coveredLangs(c.versions).filter((l) => !fuText(fuOf(c, k), l).trim());
 const day = (iso) => new Date(iso).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
-const fuSummary = (c) => (!fuOn(c, 1) ? "none" : fuOn(c, 2) ? `follow-ups after ${fuDays(c, 1)} days, then ${fuDays(c, 2)} more` : `follow-up after ${plural(fuDays(c, 1), "day")}`);
+const closeDays = (c) => c.close_days || 15;
+const closeTxt = (c) => (c.close_on !== false ? `“No reply” ${closeDays(c)} days after the last email` : "");
+const fuSummary0 = (c) => (!fuOn(c, 1) ? "none" : fuOn(c, 2) ? `follow-ups after ${fuDays(c, 1)} days, then ${fuDays(c, 2)} more` : `follow-up after ${plural(fuDays(c, 1), "day")}`);
+const fuSummary = (c) => [fuSummary0(c) === "none" ? "" : fuSummary0(c), closeTxt(c)].filter(Boolean).join(", then ") || "none";
+
+/** The third automation: those who never answered become "No reply" (not blocked: a later
+ * campaign can try them again; a late reply still moves them to Replied). */
+function closeSection(c) {
+  const on = c.close_on !== false;
+  return `<div class="cb-fu auto ${on ? "on" : ""}" data-fu="close">
+    <div class="auto-h"><label class="check"><input type="checkbox" class="chk" data-close-on ${on ? "checked" : ""}> <b>Mark as “No reply” those who never answer</b></label><span class="pill ${on ? "st-pilot" : ""}">${on ? "On" : "Off"}</span></div>
+    <p class="small muted" style="margin:0">Their status becomes <b>No reply</b>: the campaign is over for them, nothing more is sent. They aren't blocked: a later campaign can try them again, and if they answer late they move to Replied.</p>
+    ${on ? `<label class="fu-days small muted"><span>after</span><input class="input sm" type="number" min="1" max="90" data-close-days value="${closeDays(c)}" aria-label="Days after the last email"><span>days after the last email (the last follow-up${fuOn(c, 1) ? "" : ", or the first email when follow-ups are off"})</span></label>` : ""}</div>`;
+}
+
 function setFuText(c, k, l, text) {
   const fu = (c[FU[k].text] = fuOf(c, k));
   if (l !== (fu.language || "fr") && !fu.body.trim()) { // nothing in the main language: this one becomes it
@@ -152,6 +166,7 @@ function payload() {
     followup_days: fuDays(c, 1), followup2_on: c.followup2_on !== false, followup2_days: fuDays(c, 2),
     followup: c.followup?.body?.trim() ? c.followup : undefined, // an empty text isn't saved
     followup2: c.followup2?.body?.trim() ? c.followup2 : undefined,
+    close_on: c.close_on !== false, close_days: closeDays(c),
     versions: c.versions.map((v) => ({ id: v.id || null, name: v.name, subject: v.subject, body: v.body, asset_ids: v.asset_ids, attach_photo: v.attach_photo, language: mainLang(v), translations: v.translations || {} })),
   };
 }
@@ -509,7 +524,7 @@ function wireEmails() {
 function stepAutomations() {
   return `<h2>Automations</h2>
     <p class="muted">What the app does on its own for this campaign. Set them now; you can change them any time, even once it's running, from the campaign page.</p>
-    ${fuSection(B.c, 1)}${fuSection(B.c, 2)}`;
+    ${fuSection(B.c, 1)}${fuSection(B.c, 2)}${closeSection(B.c)}`;
 }
 
 function stepSending() {
@@ -569,7 +584,7 @@ function drawSummary() {
     <dl><dt>Who</dt><dd>${esc(KINDS_PL[c.kind])}${filt.length ? `: ${esc(filt.join(" · "))}` : ""}</dd>
       <dt>Order</dt><dd>${esc({ small: "Small and new first", score: "Best score first", random: "At random" }[c.order])}</dd>
       <dt>Emails</dt><dd>${c.versions.length > 1 ? `${c.versions.length} versions, ${Math.round(100 / c.versions.length)} % each` : "One version"}${nImg ? ` · ${plural(nImg, "image")}` : ""} · in ${esc(langList(coveredLangs(c.versions)))}</dd>
-      <dt>Automations</dt><dd>${esc(fuSummary(c))}${fuOn(c, 1) ? ", if no reply" : ""}</dd>
+      <dt>Automations</dt><dd>${esc(fuSummary(c))}</dd>
       <dt>Sending</dt><dd>${c.daily_cap} a day${c.start_on ? `, from ${esc(new Date(c.start_on).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))}` : ""} · ${B.manual !== false ? "you send each one" : c.review === "auto" ? "approved once" : "you approve each morning"}</dd></dl>
     ${probs.map(([step, t, soft]) => `<button class="cb-prob ${soft ? "soft" : ""}" data-go="${step}">${esc(t)}</button>`).join("")}
     <button class="btn cb-go" data-start ${blocking.length ? "disabled" : ""}>Start campaign</button></section>
@@ -585,7 +600,7 @@ function confirmStart() {
       <li>${small(I.check)} <span><b>${plural(a.chosen, "lead")}</b> get ${c.versions.length > 1 ? `one of <b>${c.versions.length} versions</b>, at random` : "the email"}.</span></li>
       <li>${small(I.check)} <span><b>${c.daily_cap} a day</b>, ${startsLater ? `from ${esc(c.start_on)}` : "from today, inside sending hours"}: about ${plural(workdays(a.chosen, c.daily_cap), "working day")}.</span></li>
       <li>${small(I.check)} <span>${c.review === "auto" ? "First emails go out <b>without asking you</b>." : "Each morning's emails <b>wait for you in Today</b> before anything goes out."}</span></li>
-      <li>${small(I.check)} <span>${fuOn(c, 1) ? `<b>Automations:</b> no reply after <b>${plural(fuDays(c, 1), "day")}</b>, follow-up 1 goes out <b>on its own</b>, in their language${fuOn(c, 2) ? `; still none <b>${plural(fuDays(c, 2), "day")}</b> later, follow-up 2, the last one` : ""}.` : "<b>No automation</b>: nothing goes out on its own."} You can change automations any time from the campaign page.</span></li>
+      <li>${small(I.check)} <span>${fuOn(c, 1) ? `<b>Automations:</b> no reply after <b>${plural(fuDays(c, 1), "day")}</b>, follow-up 1 goes out <b>on its own</b>, in their language${fuOn(c, 2) ? `; still none <b>${plural(fuDays(c, 2), "day")}</b> later, follow-up 2, the last one` : ""}.` : "<b>No follow-up</b>: nothing goes out on its own."}${c.close_on !== false ? ` Those who never answer become <b>No reply</b> ${plural(closeDays(c), "day")} after the last email.` : ""} You can change automations any time from the campaign page.</span></li>
       <li>${small(I.check)} <span>The list of leads is fixed when you start. You can add more later, pause, or stop.</span></li></ul>
       <div class="row"><span class="grow"></span><button class="btn" data-close>Not yet</button><button class="btn primary" data-go-start>Start</button></div></div>`, { narrow: true });
   sheet.onclick = async (e) => {
@@ -614,6 +629,7 @@ function onBuilderInput(e) {
   if (t.dataset.f === "daily_cap") { c.daily_cap = Math.max(1, Math.min(60, +t.value || 1)); save(); drawSteps(); return; }
   if (t.dataset.f === "start_on") { c.start_on = t.value || null; save(); drawSummary(); return; }
   if (t.dataset.fubody) { setFuText(c, +t.dataset.fustep, t.dataset.fubody, t.value); save(); drawSummary(); return; }
+  if (t.matches("[data-close-days]")) { c.close_days = Math.max(1, Math.min(90, +t.value || 15)); save(); drawSteps(); return; }
   if (t.dataset.fudays) { const k = +t.dataset.fudays; c[FU[k].days] = Math.max(1, Math.min(30, +t.value || FU[k].d)); save(); drawSteps(); return; }
   if (t.dataset.sig) {
     B.sigs[t.dataset.sig] = t.value;
@@ -768,7 +784,8 @@ function onBuilderChange(e) {
     else c.excluded = [...new Set([...c.excluded, id])];
     save(); refreshAudience();
   }
-  else if (t.matches("[data-followups]")) { c[FU[+t.dataset.followups].on] = t.checked; save(); drawFu(1); drawFu(2); drawSteps(); }
+  else if (t.matches("[data-followups]")) { c[FU[+t.dataset.followups].on] = t.checked; save(); drawFu(1); drawFu(2); drawFu("close"); drawSteps(); }
+  else if (t.matches("[data-close-on]")) { c.close_on = t.checked; save(); drawFu("close"); drawSteps(); }
 }
 
 /** Redraw one follow-up block alone (keeps the rest of the step as it is). */
@@ -776,7 +793,7 @@ function drawFu(k) {
   const el = $(`.cb-fu[data-fu="${k}"]`);
   if (!el) return;
   const tmp = document.createElement("div");
-  tmp.innerHTML = fuSection(B.c, k);
+  tmp.innerHTML = k === "close" ? closeSection(B.c) : fuSection(B.c, k);
   el.replaceWith(tmp.firstElementChild);
 }
 
@@ -794,7 +811,7 @@ function wire() {
 
 const STATE = {
   not_sent: ["Not sent yet", ""], to_review: ["Written, not sent", "todo"], approved: ["Approved, going out", ""],
-  waiting: ["Sent, no reply yet", ""], followed_up: ["Followed up, no reply yet", ""], followed_up_2: ["Followed up twice, no reply", ""], replied: ["Replied", "ok"], interested: ["Interested", "ok"],
+  waiting: ["Sent, no reply yet", ""], followed_up: ["Followed up, no reply yet", ""], followed_up_2: ["Followed up twice, no reply", ""], no_reply: ["No reply: done", ""], replied: ["Replied", "ok"], interested: ["Interested", "ok"],
   stopped: ["Asked to stop", "bad"], failed: ["Not sent (error)", "bad"], skipped: ["Skipped (contacted another way)", ""],
 };
 let leadFilter = "to_send";
@@ -813,7 +830,7 @@ function renderResults(c) {
   const r = c.results, t = r.totals, test = r.test;
   const live = c.status === "running" || c.status === "paused";
   const toSend = r.leads.filter((l) => TO_SEND.includes(l.state)).map((l) => l.id);
-  const counts = { to_send: toSend.length, waiting: t.sent - t.replied - t.stopped, replied: t.replied + t.stopped, all: t.leads };
+  const counts = { to_send: toSend.length, waiting: t.sent - t.replied - t.stopped - (t.no_reply || 0), replied: t.replied + t.stopped, no_reply: t.no_reply || 0, all: t.leads };
   if (!counts[leadFilter] && leadFilter !== "all") leadFilter = counts.to_send ? "to_send" : counts.replied ? "replied" : counts.waiting ? "waiting" : "all";
   const show = r.leads.filter((l) => leadFilter === "all" || (leadFilter === "replied" ? ["replied", "interested", "stopped"].includes(l.state) : leadFilter === "to_send" ? TO_SEND.includes(l.state) : leadFilter === "waiting" ? ["waiting", "followed_up", "followed_up_2"].includes(l.state) : l.state === leadFilter));
   const vcard = (v, i) => {
@@ -856,7 +873,7 @@ function renderResults(c) {
     <div class="cr-low">
       <section class="card"><h2>Day by day</h2>${r.days.length ? `<div class="cr-days">${r.days.map((d) => `<div title="${d.day}: ${d.sent} sent, ${d.replies} replies"><span class="b" style="height:${(d.sent / maxDay) * 100}%"><span class="r" style="height:${d.sent ? Math.min(100, (d.replies / d.sent) * 100) : 0}%"></span></span><span class="small muted">${new Date(d.day).toLocaleDateString("en-GB", { weekday: "short" }).slice(0, 2)}</span></div>`).join("")}</div>
         <p class="small muted" style="margin:6px 0 0"><span class="sw" style="background:var(--emerald)"></span> sent · <span class="sw" style="background:var(--warn)"></span> replies</p>` : `<p class="small muted">Nothing sent yet.</p>`}</section>
-      <section class="card"><div class="row"><h2 style="flex:1">The ${t.leads} leads</h2><div class="seg" role="group" aria-label="Show">${[["to_send", "To send"], ["waiting", "Sent"], ["replied", "Replied"], ["all", "All"]].map(([k, l]) => `<button data-lf="${k}" aria-pressed="${leadFilter === k}">${l} <span class="mono small">${counts[k]}</span></button>`).join("")}</div></div>
+      <section class="card"><div class="row"><h2 style="flex:1">The ${t.leads} leads</h2><div class="seg" role="group" aria-label="Show">${[["to_send", "To send"], ["waiting", "Sent"], ["replied", "Replied"], ["no_reply", "No reply"], ["all", "All"]].map(([k, l]) => `<button data-lf="${k}" aria-pressed="${leadFilter === k}">${l} <span class="mono small">${counts[k]}</span></button>`).join("")}</div></div>
         ${show.length ? `<div class="cr-leads">${show.slice(0, 200).map((l) => `<div class="cr-lead ${TO_SEND.includes(l.state) ? "can-send" : ""}" data-open="${l.id}" role="button" tabindex="0"><span class="vl sm" style="background:${VCOL[LET.indexOf(l.letter)] || "var(--dim)"}">${esc(l.letter)}</span><span class="nm"><b>${esc(l.person || l.name)}</b> <span class="muted small">${esc(l.city || "")}</span>${l.reply ? `<span class="small muted q">“${esc(l.reply)}”</span>` : ""}</span><span class="chip-s ${STATE[l.state]?.[1] || ""}">${STATE[l.state]?.[0] || l.state}</span><span class="small muted">${esc(l.at ? when(l.at) : "")}</span>${TO_SEND.includes(l.state) && c.status !== "draft" ? `<button class="btn sm primary" data-send-lead="${l.id}">${small(I.send, 13)} Send</button>` : `<span></span>`}</div>`).join("")}</div>` : `<p class="small muted">Nobody here.</p>`}</section>
     </div></div>`;
   C().onclick = async (e) => {
@@ -873,6 +890,7 @@ function renderResults(c) {
       else if (d.more !== undefined) addLeads(c);
       else if (d.settings !== undefined) liveSettings(c);
       else if (d.fuEdit) editFollowup(c, +d.fuEdit);
+      else if (d.closeEdit !== undefined) editClose(c);
       else if (d.trEdit) editTranslations(c, +d.trEdit);
       else if (d.winner) {
         if (d.confirm !== "1") { d.confirm = "1"; b.textContent = `Confirm: everyone left gets ${d.letter}`; return; }
@@ -954,8 +972,15 @@ function fuCard(c) {
       ${on ? `<div class="cr-fu-n"><div><b>${st.sent || 0}</b><span>sent</span></div><div><b>${st.waiting || 0}</b><span>going out now</span></div><div><b>${st.later || 0}</b><span>planned${st.next_at ? `, next ${esc(day(st.next_at))}` : ""}</span></div><div><b>${st.replied || 0}</b><span>not needed: replied</span></div></div>` : ""}
       ${on && miss.length ? `<div class="note warn"><span>Not written in ${esc(miss.map(([l, n]) => `${LANG[l] || l} (${plural(n, "lead")})`).join(", "))}: they don't get it until you add it.</span></div>` : ""}</div>`;
   };
+  const closeRow = () => {
+    const on = c.close_on !== false, st = c.close_status || {};
+    return `<div class="cr-auto"><div class="row auto-h"><b style="flex:1">Mark as “No reply” those who never answer</b>
+        <span class="pill ${on ? "st-pilot" : ""}">${on ? `On, ${plural(closeDays(c), "day")} after the last email` : "Off"}</span>
+        <button class="btn sm" data-close-edit>Edit</button></div>
+      ${on ? `<div class="cr-fu-n"><div><b>${st.done || 0}</b><span>marked No reply</span></div><div><b>${st.later || 0}</b><span>to mark if still silent${st.next_at ? `, next ${esc(day(st.next_at))}` : ""}</span></div></div>` : ""}</div>`;
+  };
   return `<section class="card cr-fu"><div class="row"><h2 style="flex:1;margin:0">Automations</h2><span class="small muted">what the app does on its own · change them any time</span></div>
-    ${row(1)}${row(2)}
+    ${row(1)}${row(2)}${closeRow()}
     <p class="small muted" style="margin:0">Follow-ups go out on their own, Monday to Friday 9:00–18:00, a few minutes apart, as replies in the first email's conversation. A reply stops them. If the app was off on the day, they go out once it's back on.</p></section>`;
 }
 
@@ -1003,6 +1028,25 @@ function editTranslations(c, versionId) {
       closeModal();
       const added = vLangs(v).filter((l) => written(v, l) && !before.has(l));
       toast(added.length ? `Saved. Leads who speak ${langList(added)} can now join: use “Add leads”${c.versions.length > 1 ? " once every version has it" : ""}.` : "Saved.");
+      changed();
+    });
+  };
+}
+
+function editClose(c) {
+  const sheet = openModal(`<div class="sheet-h"><h2>Automation: “No reply”</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+    <form class="sheet-b"><label class="check"><input type="checkbox" class="chk" name="on" ${c.close_on !== false ? "checked" : ""}> Mark as “No reply” those who never answer</label>
+      <label class="fu-days small muted"><span>after</span><input class="input sm" type="number" name="days" min="1" max="90" value="${closeDays(c)}"><span>days after the last email they got from this campaign</span></label>
+      <p class="small muted" style="margin:0">Only once no follow-up is still to come. They aren't blocked: a later campaign can try them again, and a late reply moves them to Replied.</p>
+      <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`, { narrow: true });
+  sheet.onclick = (e) => { if (e.target.closest("[data-close]")) closeModal(); };
+  sheet.onsubmit = async (e) => {
+    e.preventDefault();
+    const f = e.target, days = Math.max(1, Math.min(90, +f.days.value || 15));
+    await busy(f.querySelector(".primary"), async () => {
+      await api(`/api/campaigns/${c.id}`, { method: "PUT", body: { close_on: f.on.checked, close_days: days } });
+      closeModal();
+      toast(f.on.checked ? `Saved. Those who never answer become “No reply” ${plural(days, "day")} after the last email.` : "“No reply” automation off.");
       changed();
     });
   };

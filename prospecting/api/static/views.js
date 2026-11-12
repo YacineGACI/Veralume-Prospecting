@@ -41,7 +41,8 @@ export const today = {
     const days = t.week.map((w) => w.emails + w.calls > 0);
     const maxW = Math.max(10, ...t.week.map((w) => w.emails + w.calls));
     const f = t.funnel;
-    const reached = (i) => STAGES.slice(i).reduce((a, s) => a + (f[s] || 0), 0);
+    // "No reply" leads were contacted: they count up to that stage.
+    const reached = (i) => STAGES.slice(i).reduce((a, s) => a + (f[s] || 0), 0) + (i <= STAGES.indexOf("contacted") ? f.no_reply || 0 : 0);
     C().innerHTML = `<div class="view">
       <div class="topline"><div><h1>${head}</h1><div class="sub row" style="gap:10px;margin-top:8px">${segButtons(t.segment)}<span class="small muted">the segment you're working on today</span></div></div><span class="grow"></span>
         <button class="btn" data-pal>${small(I.search, 15)} Search <kbd>Ctrl K</kbd></button></div>
@@ -207,7 +208,7 @@ export const leads = {
     $("#bulk").innerHTML = n ? `<div class="bulk"><span>${n} selected</span>
       <button class="btn sm" data-bulk="call">${small(I.tel)} Add to call queue</button>
       <button class="btn sm" data-bulk="contacted">${small(I.check)} Mark contacted</button>
-      <select data-bulk-status aria-label="Move to stage"><option value="">Move to…</option>${[...STAGES, "lost"].map((s) => `<option value="${s}">${STATUS[s]}</option>`).join("")}</select>
+      <select data-bulk-status aria-label="Move to stage"><option value="">Move to…</option>${[...STAGES, "no_reply", "lost"].map((s) => `<option value="${s}">${STATUS[s]}</option>`).join("")}</select>
       ${LABELS.items.length ? `<select data-bulk-label aria-label="Tag the selected leads"><option value="">Tag…</option>${LABELS.items.map((x) => `<option value="+${x.id}">Add “${esc(x.name)}”</option>`).join("")}${LABELS.items.map((x) => `<option value="-${x.id}">Remove “${esc(x.name)}”</option>`).join("")}</select>` : ""}
       <button class="btn sm" data-bulk="dnc">Do not contact</button>
       <button class="btn sm" data-clear aria-label="Clear selection">${small(I.x)}</button></div>` : "";
@@ -409,7 +410,7 @@ export const pipeline = {
   async render() {
     const p = await api(`/api/pipeline${this.kind ? `?kind=${this.kind}` : ""}`);
     // From "Contacted" on: the leads not contacted yet live in Leads and Today, not here.
-    const cols = [...STAGES.slice(1), "lost"], cnt = p.counts;
+    const cols = [...STAGES.slice(1), "no_reply", "lost"], cnt = p.counts;
     const reached = (i) => STAGES.slice(i).reduce((a, s) => a + (cnt[s] || 0), 0);
     C().innerHTML = `<div class="view wide">
       <div class="topline"><div><h1>Pipeline</h1><div class="sub">Everyone you've contacted. Drag a card to move it; emails, replies and calls move leads on their own. <a href="#leads">${(cnt.new || 0).toLocaleString("en")} not contacted yet</a> are in Leads.</div></div><span class="grow"></span>

@@ -154,7 +154,7 @@ def handle(s: Session, em: EmailMessage) -> str | None:
         lead.next_action = lead.next_action_at = None
         s.add(Activity(lead_id=lead.id, kind="status", text="asked to stop → do not contact"))
         return "stop"
-    if lead.status in ("new", "shortlisted", "contacted"):
+    if lead.status in ("new", "shortlisted", "contacted", "no_reply"):
         s.add(Activity(lead_id=lead.id, kind="status", text=f"{lead.status} → replied"))
         lead.status = "replied"
     pilot.on_reply(s, lead)

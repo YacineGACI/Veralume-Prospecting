@@ -52,6 +52,7 @@ def _config(s, c: Campaign) -> dict[str, Any]:
         "followup_default": _default(1),
         "followup2_on": c.followup2_on is not False, "followup2_days": C.days_of(c, 2),
         "followup2": _followup(C.followup_of(s, c, 2)), "followup2_default": _default(2),
+        "close_on": c.close_on is not False, "close_days": C.close_days_of(c),
         "started_at": c.started_at, "ended_at": c.ended_at, "created_at": c.created_at,
         "versions": [_version(t, i) for i, t in enumerate(C.versions(s, c))],
     }  # fmt: skip
@@ -232,6 +233,8 @@ class CampaignIn(BaseModel):
     followup2_on: bool | None = None
     followup2_days: int | None = None
     followup2: FollowupIn | None = None
+    close_on: bool | None = None  # mark "No reply" those who never answered…
+    close_days: int | None = None  # …this many days after the last email
     versions: list[VersionIn] | None = None
 
 
@@ -299,6 +302,12 @@ def _apply(s, c: Campaign, b: CampaignIn) -> None:
             raise HTTPException(422, "review is daily or auto")
         c.review = b.review
     _apply_followups(s, c, b)
+    if b.close_on is not None:
+        c.close_on = b.close_on
+    if b.close_days is not None:
+        if not 1 <= b.close_days <= 90:
+            raise HTTPException(422, "\"No reply\" comes 1 to 90 days after the last email.")
+        c.close_days = b.close_days
     if b.start_on is not None:
         try:
             c.start_on = date.fromisoformat(b.start_on).isoformat() if b.start_on else None
@@ -385,6 +394,7 @@ def create(b: CampaignIn) -> dict[str, Any]:
         c.followup_days = c.followup_days or C.FOLLOWUP_DAYS
         c.followup2_days = c.followup2_days or C.FOLLOWUP2_DAYS
         c.followup2_on = c.followup2_on is not False
+        c.close_on, c.close_days = c.close_on is not False, c.close_days or C.CLOSE_DAYS
         s.commit()
         return _config(s, c)
 
@@ -398,6 +408,7 @@ def get_one(campaign_id: int) -> dict[str, Any]:
             out["results"] = C.results(s, c)
             out["followup_status"] = C.followup_status(s, c, 1)
             out["followup2_status"] = C.followup_status(s, c, 2)
+            out["close_status"] = C.close_status(s, c)
         out["mailbox"] = mailbox_status(s)
         return out
 
@@ -433,7 +444,8 @@ def duplicate(campaign_id: int) -> dict[str, Any]:
                      size=c.size, lead_order=c.lead_order, excluded=[], daily_cap=c.daily_cap,
                      review=c.review, metric=c.metric, followups_on=c.followups_on, status="draft",
                      followup_days=C.days_of(c, 1), followup2_days=C.days_of(c, 2),
-                     followup2_on=c.followup2_on is not False)  # fmt: skip
+                     followup2_on=c.followup2_on is not False, close_on=c.close_on is not False,
+                     close_days=C.close_days_of(c))  # fmt: skip
         s.add(d)
         s.flush()
         for t in C.versions(s, c):

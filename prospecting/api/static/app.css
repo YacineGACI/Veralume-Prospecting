@@ -101,6 +101,7 @@ label.check{display:inline-flex;gap:8px;align-items:center;font-size:13px}
 .st-interview{color:var(--violet);background:var(--violetbg)}
 .st-pilot{color:var(--ink);background:var(--mint)}
 .st-customer{color:var(--onaccent);background:var(--emerald)}
+.st-no_reply{color:var(--muted);background:var(--panel);text-decoration:none}
 .st-lost{color:var(--bad);background:var(--badbg)}
 .tag{font:11px var(--mono);color:var(--muted);border:1px solid var(--line2);border-radius:5px;padding:1px 6px;white-space:nowrap}
 .flag{font-size:11.5px;color:var(--bad);background:var(--badbg);border-radius:5px;padding:1px 6px}
@@ -370,7 +371,7 @@ tbody tr.sel{background:var(--mint2)}
 .session b{font:500 18px var(--mono);color:var(--text);display:block}
 
 /* Pipeline */
-.board{display:grid;grid-template-columns:repeat(7,minmax(200px,1fr));gap:12px;overflow-x:auto;padding-bottom:10px}
+.board{display:grid;grid-template-columns:repeat(7,minmax(160px,1fr));gap:12px;overflow-x:auto;padding-bottom:10px}
 .col{background:var(--panel);border-radius:14px;padding:10px;display:flex;flex-direction:column;gap:8px;min-height:380px}
 .col.over{outline:2px dashed var(--emerald);outline-offset:-2px}
 .col-h{display:flex;align-items:center;gap:8px;padding:2px 4px 6px;font-size:13px;font-weight:600}

@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from prospecting import experiments, languages, mailer, translations
 from prospecting.contacts import shared_contacts, usable_emails, usable_phones
 from prospecting.db import (
-    Campaign, CampaignLead, Experiment, Lead, Message, Template, now,
+    Activity, Campaign, CampaignLead, Experiment, Lead, Message, Template, now,
 )  # fmt: skip
 from prospecting.mailer import day_start, iso, local
 from prospecting.text import email_is_personal
@@ -580,6 +580,8 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
             return "interested", m.sent_at
         if o.get("reply"):
             return "replied", (replies.get(row.lead_id) or m).sent_at
+        if lead and lead.status == "no_reply":
+            return "no_reply", m.sent_at
         if row.lead_id in followed:
             step, at = followed[row.lead_id]
             return ("followed_up" if step == 1 else "followed_up_2"), at
@@ -592,7 +594,7 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
         "leads": len(rows), "sent": len(sent), "to_review": count["to_review"],
         "approved": count["approved"], "not_sent": count["not_sent"],
         "replied": replied, "interested": count["interested"], "stopped": count["stopped"],
-        "skipped": count["skipped"], "failed": count["failed"],
+        "skipped": count["skipped"], "failed": count["failed"], "no_reply": count["no_reply"],
         "pilots": sum(1 for l in leads.values() if l.pilot_stage),
     }  # fmt: skip
 
@@ -839,6 +841,70 @@ def write_due_followups(s: Session) -> int:
                 )  # fmt: skip
                 n += 1
     return n
+
+
+# --- "No reply": the campaign is over for those who never answered ------------------------
+
+CLOSE_DAYS = 15
+
+
+def close_days_of(c: Campaign) -> int:
+    return c.close_days or CLOSE_DAYS
+
+
+def _silent(s: Session, c: Campaign) -> list[tuple[Lead, Message]]:
+    """Leads of this campaign still "contacted" with nothing more to come from it (no email
+    waiting, no follow-up planned), each with the last email it got from the campaign."""
+    coming: set[int] = set()
+    for step in STEPS:
+        coming |= {b.lead_id for b, w in _followup_rows(s, c, step) if w in ("later", "due", "waiting")}
+    last: dict[int, Message] = {}
+    for m in s.scalars(
+        select(Message).where(Message.campaign_id == c.id, Message.direction == "out",
+                              Message.status == "sent").order_by(Message.sent_at)
+    ):  # fmt: skip
+        last[m.lead_id] = m
+    pending = set(s.scalars(
+        select(Message.lead_id).where(Message.lead_id.in_(list(last)), Message.direction == "out",
+                                      Message.status.in_(("queued", "approved")))
+    )) if last else set()  # fmt: skip
+    outcome = experiments._outcomes(s, set(last))
+    out = []
+    for lead in s.scalars(select(Lead).where(Lead.id.in_(list(last)))) if last else []:
+        if lead.status != "contacted" or lead.do_not_contact or lead.id in coming or lead.id in pending \
+                or outcome.get(lead.id, {}).get("reply"):
+            continue
+        out.append((lead, last[lead.id]))
+    return out
+
+
+def close_silent(s: Session) -> int:
+    """Mark "no_reply" the leads who never answered any of a campaign's emails, `close_days`
+    after the last one (when no follow-up is still to come). The caller commits."""
+    n = 0
+    for c in s.scalars(select(Campaign).where(Campaign.status.in_(("running", "done")),
+                                              Campaign.close_on.isnot(False))):  # fmt: skip
+        by = local() - timedelta(days=close_days_of(c))
+        for lead, m in _silent(s, c):
+            if local(m.sent_at) > by:
+                continue
+            emails = s.scalar(select(func.count(Message.id)).where(
+                Message.campaign_id == c.id, Message.lead_id == lead.id,
+                Message.direction == "out", Message.status == "sent")) or 0  # fmt: skip
+            s.add(Activity(lead_id=lead.id, kind="status",
+                           text=f"contacted → no reply: no answer to {emails} email{'s' if emails > 1 else ''} "
+                                f"of “{c.name}”"))  # fmt: skip
+            lead.status = "no_reply"
+            n += 1
+    return n
+
+
+def close_status(s: Session, c: Campaign) -> dict[str, Any]:
+    """For the campaign page: how many were marked "No reply", and when the next ones are."""
+    done = s.scalar(select(func.count(CampaignLead.id)).join(Lead, Lead.id == CampaignLead.lead_id)
+                    .where(CampaignLead.campaign_id == c.id, Lead.status == "no_reply")) or 0  # fmt: skip
+    nxt = sorted(iso(max(local(m.sent_at) + timedelta(days=close_days_of(c)), local())) for _, m in _silent(s, c))
+    return {"done": done, "later": len(nxt), "next_at": nxt[0] if nxt else None}
 
 
 def followup_status(s: Session, c: Campaign, step: int = 1) -> dict[str, Any]:
