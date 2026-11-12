@@ -742,6 +742,7 @@ pre.env{font:12.5px var(--mono);background:var(--bg);border:1px solid var(--line
 .auto-h{display:flex;align-items:center;gap:8px}
 .auto-h .check{flex:1;margin:0}
 .fu-ed{display:grid;gap:8px}
+.tl-f{display:grid;gap:4px;margin-top:8px}
 .fu-ed .cb-ltabs{margin:0}
 .fu-days{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
 .fu-days input.sm{width:64px;padding:4px 8px}

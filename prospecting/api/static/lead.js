@@ -480,12 +480,21 @@ export function leadKey(e) {
 
 const MODE = { first: "First email", followup: "Follow-up", reply: "Reply to their message" };
 
+/** "Language" field: the languages the email's template is written in, theirs marked. A
+ * note says when it isn't written in theirs yet. */
+function langField(langs, cur, theirs, attr) {
+  if (!langs.length) return "";
+  const opts = langs.map((k) => `<option value="${k}" ${k === cur ? "selected" : ""}>${esc(LANG[k] || k)}${k === theirs ? " · their language" : ""}</option>`).join("");
+  return `<div class="field"><span class="k">Language</span>${langs.length > 1 ? `<select ${attr} aria-label="Language of this email">${opts}</select>` : `<span>${esc(LANG[cur] || cur)}</span>`}
+    ${langs.includes(theirs) ? "" : `<span class="flag" title="Add it to the template to write to them in their language">not written in ${esc(LANG[theirs] || theirs)} yet</span>`}</div>`;
+}
+
 // fileIds: their retouched photos to attach (from "Send them back").
-export async function openComposer(leadId, templateId = null, { fileIds = null } = {}) {
+export async function openComposer(leadId, templateId = null, { fileIds = null, language = null } = {}) {
   let c, ai;
   try {
     [c, ai] = await Promise.all([
-      api(`/api/compose?lead_id=${leadId}${templateId ? `&template_id=${templateId}` : ""}`),
+      api(`/api/compose?lead_id=${leadId}${templateId ? `&template_id=${templateId}` : ""}${language ? `&language=${language}` : ""}`),
       api("/api/ai").catch(() => null),
     ]);
   } catch (e) { return fail(e); }
@@ -515,8 +524,9 @@ export async function openComposer(leadId, templateId = null, { fileIds = null }
       ${tpls.length > 1 && !sendingBack ? `<div class="tpls" role="group" aria-label="Template">${tpls.map((t) => `<button aria-pressed="${t.id === c.template_id}" data-tpl="${t.id}">${c.test?.template_id === t.id ? `${c.test.letter} · ` : ""}${esc(t.name)}</button>`).join("")}</div>` : ""}
       <div class="field"><span class="k">To</span>${noAddr ? `<span class="flag">No address yet. Add one in the lead file.</span>` : `<select id="cp-to" aria-label="To">${opts.map((a) => `<option value="${esc(a)}" ${a === c.to ? "selected" : ""}>${esc(a)}${c.usable.includes(a) ? "" : " (not theirs)"}</option>`).join("")}</select>`}</div>
       <div class="field"><span class="k">From</span><span>${esc(mb.sender || "your mailbox (not connected yet)")}</span></div>
+      ${sendingBack ? "" : langField(c.languages || [], c.language, c.lead_language, "data-cp-lang")}
       <div class="field"><span class="k">Subject</span><input id="cp-subject" value="${esc(c.subject)}" aria-label="Subject"></div>
-      <textarea class="input mailbody" id="cp-body" aria-label="Message" lang="fr" autofocus>${esc(body)}</textarea>
+      <textarea class="input mailbody" id="cp-body" aria-label="Message" lang="${esc(c.language || "fr")}" autofocus>${esc(body)}</textarea>
       ${aiBar(ai)}
       <div class="optout">--\n${esc(c.footer)}</div>
     </div>
@@ -548,7 +558,14 @@ export async function openComposer(leadId, templateId = null, { fileIds = null }
     el.classList.toggle("bad", total > 18e6);
   };
   sizeNote();
-  sheet.onchange = (e) => { if (e.target.matches("[data-att], #cp-attach")) sizeNote(); };
+  sheet.onchange = (e) => {
+    if (e.target.matches("[data-att], #cp-attach")) sizeNote();
+    if (e.target.matches("[data-cp-lang]")) {
+      const edited = sheet.querySelector("#cp-body").value !== c.body || sheet.querySelector("#cp-subject").value !== c.subject;
+      if (edited && !confirm(`Rewrite the email in ${LANG[e.target.value]}? Your changes to it are lost.`)) { e.target.value = c.language; return; }
+      openComposer(leadId, c.template_id, { fileIds, language: e.target.value });
+    }
+  };
   const payload = (whenTo) => ({
     lead_id: l.id, to: sheet.querySelector("#cp-to")?.value || "", subject: sheet.querySelector("#cp-subject").value,
     body: sheet.querySelector("#cp-body").value, template_id: sendingBack ? null : c.template_id,
@@ -620,6 +637,7 @@ export async function openReview(messageId, item = null, { manual = null, next =
     <div class="sheet-b">
       <div class="small muted">${esc(l.name)} · ${esc(l.city || "")} · ${pill(l.status)} ${m.error && m.status === "failed" ? `<span class="flag">${esc(m.error)}</span>` : ""}</div>
       <div class="field"><span class="k">To</span><input id="rv-to" value="${esc(m.to || "")}" aria-label="To"></div>
+      <div data-rv-lang-row></div>
       <div class="field"><span class="k">Subject</span><input id="rv-subject" value="${esc(m.subject)}" aria-label="Subject"></div>
       <textarea class="input mailbody" id="rv-body" aria-label="Message" lang="${m.language || "fr"}" autofocus>${esc(m.body)}</textarea>
       ${atts.length ? `<div class="rv-atts"><span class="small muted">${atts.length} attachment${atts.length > 1 ? "s" : ""}</span>${atts.join("")}</div>` : ""}
@@ -628,6 +646,21 @@ export async function openReview(messageId, item = null, { manual = null, next =
         ${manual ? "" : `<button class="btn" data-approve>Approve</button>`}<button class="btn primary" data-send-now>${small(I.send, 15)} Send${next && left ? ` and next <span class="small" style="opacity:.8">(${left} left)</span>` : manual ? "" : " now"} <kbd>Ctrl ↵</kbd></button></div>
     </div>`, { narrow: true });
   const save = () => api(`/api/messages/${m.id}`, { method: "PATCH", body: { to: sheet.querySelector("#rv-to").value, subject: sheet.querySelector("#rv-subject").value, body: sheet.querySelector("#rv-body").value } });
+  const drawLang = (x) => { const row = sheet.querySelector("[data-rv-lang-row]"); if (row) row.innerHTML = langField(x.languages, x.language, x.lead_language, "data-rv-lang"); };
+  if (m.template_id) api(`/api/messages/${m.id}/languages`).then(drawLang).catch(() => {});
+  sheet.onchange = async (e) => {
+    const sel = e.target.closest("[data-rv-lang]");
+    if (!sel) return;
+    const subj = sheet.querySelector("#rv-subject"), bodyEl = sheet.querySelector("#rv-body");
+    if ((subj.value !== m.subject || bodyEl.value !== m.body) && !confirm(`Rewrite the email in ${LANG[sel.value]}? Your changes to it are lost.`)) { sel.value = m.language || "fr"; return; }
+    try {
+      const r = await api(`/api/messages/${m.id}/language`, { method: "POST", body: { language: sel.value } });
+      m = { ...m, ...r };
+      subj.value = r.subject; bodyEl.value = r.body; bodyEl.lang = r.language;
+      drawLang(r);
+      toast(`Rewritten in ${LANG[r.language]}`);
+    } catch (err) { sel.value = m.language || "fr"; fail(err); }
+  };
   sheet.onclick = async (e) => {
     const t = e.target.closest("button");
     if (!t) return;

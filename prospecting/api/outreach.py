@@ -108,7 +108,7 @@ def today(segment: str | None = None) -> dict[str, Any]:
 
 
 @router.get("/compose")
-def compose(lead_id: int, template_id: int | None = None) -> dict[str, Any]:
+def compose(lead_id: int, template_id: int | None = None, language: str | None = None) -> dict[str, Any]:
     """A ready-to-edit email for one lead: the right template, filled in, with the photo
     to attach and the addresses to choose from."""
     se, _ = shared_contacts()
@@ -140,7 +140,7 @@ def compose(lead_id: int, template_id: int | None = None) -> dict[str, Any]:
             }  # fmt: skip
         if t is None:
             raise HTTPException(404, "No template fits this lead. Add one in Campaigns.")
-        d = mailer.draft(s, lead, t)
+        d = mailer.draft(s, lead, t, language if language in LANGUAGES else None)
         subject, in_reply_to, step = d["subject"], None, 0
         if mode == "reply":
             subj = last_in.subject or ""
@@ -166,6 +166,7 @@ def compose(lead_id: int, template_id: int | None = None) -> dict[str, Any]:
             "subject": subject, "body": d["body"], "in_reply_to": in_reply_to,
             "to": best, "to_options": [e["value"] for e in lead.emails or []],
             "usable": usable_emails(lead, se), "language": d["language"],
+            "languages": mailer.languages_of(t), "lead_language": languages.of_lead(lead),
             "footer": mailer.footer(lead, best or "", d["language"]),
             "photo": {"id": photo.id, "lean": photo.lean_deg,
                       "src": f"/api/photos/{photo.id}/marked.jpg"} if photo else None,
@@ -311,6 +312,43 @@ def edit_message(message_id: int, p: MessagePatch) -> dict[str, Any]:
         return _msg(m)
 
 
+class LanguageIn(BaseModel):
+    language: str
+
+
+def _languages(s, m: Message) -> dict[str, Any]:
+    t = s.get(Template, m.template_id) if m.template_id else None
+    lead = s.get(Lead, m.lead_id)
+    return {"language": m.language or "fr", "languages": mailer.languages_of(t) if t else [],
+            "lead_language": languages.of_lead(lead) if lead else "fr"}  # fmt: skip
+
+
+@router.get("/messages/{message_id}/languages")
+def message_languages(message_id: int) -> dict[str, Any]:
+    """The languages this waiting email can be rewritten in (its template's)."""
+    with session() as s:
+        return _languages(s, _pending(s, message_id))
+
+
+@router.post("/messages/{message_id}/language")
+def message_language(message_id: int, b: LanguageIn) -> dict[str, Any]:
+    """Rewrite a waiting email from its template in another language (your edits to it are
+    replaced). A reply keeps its "Re:" subject."""
+    with session() as s:
+        m = _pending(s, message_id)
+        t = s.get(Template, m.template_id) if m.template_id else None
+        if t is None:
+            raise HTTPException(409, "This email wasn't written from a template: rewrite it yourself.")
+        if b.language not in LANGUAGES or mailer.text_in(t, b.language) is None:
+            raise HTTPException(409, f"Its template isn't written in {LANGUAGES.get(b.language, b.language)} yet.")
+        d = mailer.draft(s, s.get(Lead, m.lead_id), t, b.language)
+        m.body, m.language = d["body"], d["language"]
+        if not m.in_reply_to:
+            m.subject = d["subject"]
+        s.commit()
+        return {**_msg(m), **_languages(s, m)}
+
+
 @router.post("/messages/{message_id}/send")
 def send_one(message_id: int) -> dict[str, Any]:
     with session() as s:
@@ -387,7 +425,8 @@ def pipeline(kind: str = "") -> dict[str, Any]:
 def _tpl(t: Template) -> dict[str, Any]:
     return {"id": t.id, "key": t.key, "name": t.name, "segment": t.segment, "step": t.step,
             "subject": t.subject, "body": t.body, "attach_photo": t.attach_photo,
-            "asset_ids": t.asset_ids or [], "archived": t.archived}  # fmt: skip
+            "asset_ids": t.asset_ids or [], "archived": t.archived,
+            "language": t.language or "fr", "translations": t.translations or {}}  # fmt: skip
 
 
 @router.get("/templates")
@@ -424,13 +463,22 @@ class TemplateIn(BaseModel):
     attach_photo: bool = True
     asset_ids: list[int] = []
     archived: bool = False
+    language: str = "fr"  # of subject and body
+    translations: dict[str, dict[str, str]] = {}  # the same email in other languages
+
+    def fields(self) -> dict[str, Any]:
+        if self.language not in LANGUAGES:
+            raise HTTPException(422, "Unknown language")
+        from prospecting.campaigns import clean_translations
+
+        return {**self.model_dump(), "translations": clean_translations(self.translations, self.language)}
 
 
 @router.post("/templates")
 def new_template(t: TemplateIn) -> dict[str, Any]:
     with session() as s:
         key = re.sub(r"\W+", "_", t.name.lower()).strip("_")[:28] + f"_{int(time.time()) % 10**6}"
-        row = Template(key=key, **t.model_dump())
+        row = Template(key=key, **t.fields())
         s.add(row)
         s.commit()
         return _tpl(row)
@@ -442,7 +490,7 @@ def save_template(template_id: int, t: TemplateIn) -> dict[str, Any]:
         row = s.get(Template, template_id)
         if row is None:
             raise HTTPException(404, "No such template")
-        for k, v in t.model_dump().items():
+        for k, v in t.fields().items():
             setattr(row, k, v)
         s.commit()
         return _tpl(row)

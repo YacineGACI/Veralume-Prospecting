@@ -811,6 +811,8 @@ function renderResults(c) {
     return `<article class="cr-v ${lead || won ? "lead" : ""}" style="--vc:${VCOL[i]}">
       <div class="row"><span class="vl" style="background:${VCOL[i]}">${v.letter}</span><div style="flex:1;min-width:0"><b>${esc(v.name && v.name !== v.letter ? v.name : `Version ${v.letter}`)}</b><div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">“${esc(v.subject)}”${v.asset_ids.length ? ` · ${plural(v.asset_ids.length, "image")}` : ""}</div></div>${won ? `<span class="pill st-customer">Winner</span>` : lead ? `<span class="pill st-pilot">Ahead</span>` : ""}</div>
       ${v.asset_ids.length ? `<div class="cr-imgs">${v.asset_ids.map((id) => `<img src="/api/assets/${id}/thumb" alt="">`).join("")}</div>` : ""}
+      ${(() => { const cv = c.versions.find((x) => x.id === v.template_id); if (!cv) return ""; const ls = vLangs(cv).filter((l) => written(cv, l));
+        return `<div class="row small muted cr-vlang"><span style="flex:1">In ${esc(ls.length > 3 ? `${langList(ls.slice(0, 3))} and ${ls.length - 3} more` : langList(ls))}</span><button class="btn sm" data-tr-edit="${cv.id}">Languages</button></div>`; })()}
       <div class="cr-nums"><div><b>${v.sent}</b><span>sent</span></div><div><b>${v.replied}</b><span>replied</span></div><div><b>${v.interested}</b><span>interested</span></div><div><b style="color:var(--vc)">${v.sent ? pct((test?.metric === "interested" ? v.interested : v.replied) / v.sent) : "–"}</b><span>${test?.metric === "interested" ? "interest" : "reply"} rate</span></div></div>
       ${tv && tv.sent ? `<div class="cr-bar"><span class="small muted">Likely ${test.metric === "interested" ? "interest" : "reply"} rate: ${pct(tv.low)} to ${pct(tv.high)}</span><div class="rng"><span style="left:${tv.low * 100}%;width:${Math.max(1, (tv.high - tv.low) * 100)}%"></span><i style="left:${(tv.rate || 0) * 100}%"></i></div></div>
         <div class="cr-bar"><span class="small muted">Chance of being the best: ${pct(tv.chance_best)}</span><div class="pb"><span style="width:${tv.chance_best * 100}%"></span></div></div>` : `<p class="small muted" style="margin:0">${v.planned} planned · ${v.sent ? `${v.sent} sent so far` : "nothing sent yet"}</p>`}
@@ -859,6 +861,7 @@ function renderResults(c) {
       else if (d.more !== undefined) addLeads(c);
       else if (d.settings !== undefined) liveSettings(c);
       else if (d.fuEdit !== undefined) editFollowup(c);
+      else if (d.trEdit) editTranslations(c, +d.trEdit);
       else if (d.winner) {
         if (d.confirm !== "1") { d.confirm = "1"; b.textContent = `Confirm: everyone left gets ${d.letter}`; return; }
         await busy(b, async () => { const x = await api(`/api/campaigns/${c.id}/winner`, { method: "POST", body: { template_id: +d.winner } }); toast(`Done: the ${d.unsent} leads left get version ${d.letter}${x.moved ? "" : ""}.`); confetti(); changed(); });
@@ -939,6 +942,55 @@ function fuCard(c) {
     ${on ? `<div class="cr-fu-n"><div><b>${st.sent || 0}</b><span>sent</span></div><div><b>${st.waiting || 0}</b><span>going out now</span></div><div><b>${st.later || 0}</b><span>planned${st.next_at ? `, next ${esc(day(st.next_at))}` : ""}</span></div><div><b>${st.replied || 0}</b><span>not needed: replied</span></div></div>` : ""}
     ${on && miss.length ? `<div class="note warn"><span>Not written in ${esc(miss.map(([l, n]) => `${LANG[l] || l} (${plural(n, "lead")})`).join(", "))}: they get no follow-up until you add it.</span></div>` : ""}
     ${on ? `<p class="small muted" style="margin:0">Goes out on its own, Monday to Friday 9:00–18:00, a few minutes apart, as a reply to the first email. If the app was off on the day, it goes out once the app is back on.</p>` : ""}</section>`;
+}
+
+/** A started campaign's email in other languages: its text is fixed, but languages can be
+ * added or corrected any time. Leads speaking a new one can then join with "Add leads". */
+function editTranslations(c, versionId) {
+  const v = structuredClone(c.versions.find((x) => x.id === versionId));
+  const main = mainLang(v);
+  v.translations = v.translations || {};
+  let cur = Object.keys(v.translations)[0] || null;
+  const before = new Set(vLangs(v).filter((l) => written(v, l)));
+  const draw = () => {
+    const ls = Object.keys(v.translations);
+    const others = Object.keys(LANG).filter((l) => l !== main && !ls.includes(l));
+    const tx = cur ? v.translations[cur] : null;
+    return `<div class="cb-ltabs" role="tablist" aria-label="Languages"><span class="small muted">${esc(LANG[main])} (main, fixed) ·</span>
+        ${ls.map((l) => `<button type="button" role="tab" data-tl="${l}" aria-selected="${l === cur}">${esc(LANG[l])}${written(v, l) ? "" : ` <span class="lt-todo">to write</span>`}</button>`).join("")}
+        <select class="input sm" data-tl-add aria-label="Add a language"><option value="">+ Language</option>${others.map((l) => `<option value="${l}">${esc(LANG[l])}</option>`).join("")}</select>
+        ${cur ? `<button type="button" class="btn ghost danger sm" data-tl-del>Remove ${esc(LANG[cur])}</button>` : ""}</div>
+      ${tx ? `<label class="small muted tl-f">Subject in ${esc(LANG[cur])}<input class="input" data-tl-f="subject" lang="${cur}" value="${esc(tx.subject)}" placeholder="${esc(v.subject)}"></label>
+        <label class="small muted tl-f">Email in ${esc(LANG[cur])}<textarea class="input mailbody" rows="12" data-tl-f="body" lang="${cur}">${esc(tx.body)}</textarea></label>`
+        : `<p class="small muted">Only in ${esc(LANG[main])} so far. Add a language to write it for leads who speak it.</p>`}`;
+  };
+  const sheet = openModal(`<div class="sheet-h"><h2>Version ${esc(v.name || "")}: languages</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+    <form class="sheet-b"><div data-tl-here>${draw()}</div>
+      <p class="small muted" style="margin:0">Each lead gets the email in their language. Emails already sent don't change.</p>
+      <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`);
+  const redraw = () => { $("[data-tl-here]", sheet).innerHTML = draw(); };
+  sheet.oninput = (e) => { const f = e.target.dataset.tlF; if (f && cur) v.translations[cur][f] = e.target.value; };
+  sheet.onchange = (e) => { if (e.target.matches("[data-tl-add]") && e.target.value) { cur = e.target.value; v.translations[cur] = { subject: "", body: "" }; redraw(); $("[data-tl-f=subject]", sheet)?.focus(); } };
+  sheet.onclick = (e) => {
+    if (e.target.closest("[data-close]")) return closeModal();
+    const b = e.target.closest("button");
+    if (b?.dataset.tl) { cur = b.dataset.tl; redraw(); }
+    if (b?.dataset.tlDel !== undefined && cur) { delete v.translations[cur]; cur = Object.keys(v.translations)[0] || null; redraw(); }
+  };
+  sheet.onsubmit = async (e) => {
+    e.preventDefault();
+    const half = Object.entries(v.translations).find(([, t]) => (t.subject.trim() || t.body.trim()) && !(t.subject.trim() && t.body.trim()));
+    if (half) { cur = half[0]; redraw(); toast(`${LANG[half[0]]} needs both a subject and an email.`, { err: true }); return; }
+    v.translations = Object.fromEntries(Object.entries(v.translations).filter(([, t]) => t.subject.trim() && t.body.trim()));
+    const versions = c.versions.map((x) => (x.id === v.id ? v : x)).map((x) => ({ id: x.id, name: x.name, subject: x.subject, body: x.body, asset_ids: x.asset_ids, attach_photo: x.attach_photo, language: mainLang(x), translations: x.translations || {} }));
+    await busy(e.target.querySelector(".primary"), async () => {
+      await api(`/api/campaigns/${c.id}`, { method: "PUT", body: { versions } });
+      closeModal();
+      const added = vLangs(v).filter((l) => written(v, l) && !before.has(l));
+      toast(added.length ? `Saved. Leads who speak ${langList(added)} can now join: use “Add leads”${c.versions.length > 1 ? " once every version has it" : ""}.` : "Saved.");
+      changed();
+    });
+  };
 }
 
 function editFollowup(c) {

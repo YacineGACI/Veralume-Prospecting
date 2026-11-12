@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 
-from prospecting import campaigns, enrich, mailer, pilot, scoring, screen, worker
+from prospecting import campaigns, enrich, mailer, pilot, scoring, screen, translations, worker
 from prospecting.api.campaigns import router as campaigns_router
 from prospecting.api.experiments import router as experiments_router
 from prospecting.api.labels import router as labels_router
@@ -41,6 +41,9 @@ STATIC = Path(__file__).with_name("static")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    with session() as s:  # our two French texts and the signature get their translations
+        translations.fill_known(s)
+        s.commit()
     if settings.run_worker:
         worker.start()
     yield

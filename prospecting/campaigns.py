@@ -24,7 +24,7 @@ from typing import Any
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
-from prospecting import experiments, languages, mailer
+from prospecting import experiments, languages, mailer, translations
 from prospecting.contacts import shared_contacts, usable_emails, usable_phones
 from prospecting.db import (
     Campaign, CampaignLead, Experiment, Lead, Message, Template, now,
@@ -693,15 +693,7 @@ def clean_translations(tr: dict[str, Any] | None, main: str) -> dict[str, dict[s
 # --- the follow-up -------------------------------------------------------------------------
 
 FOLLOWUP_DAYS = 7
-FOLLOWUP_BODY = (
-    "Bonjour {prenom},\n\n"
-    "Je me permets de revenir vers vous, au cas où mon premier message serait passé inaperçu.\n\n"
-    "Si vous êtes curieux de voir ce que Veralume donne sur vos propres photos, envoyez-m'en "
-    "simplement 2 ou 3 en réponse : je vous les renvoie retouchées, gratuitement et sans "
-    "engagement.\n\n"
-    "Et si ce n'est pas le bon moment, un simple « non merci » me suffit.\n\n"
-    "Bonne journée,\n\n{signature}"
-)
+FOLLOWUP_BODY = translations.FOLLOWUP["fr"]  # in every language: translations.FOLLOWUP
 _RE = "Re:"  # a follow-up's subject is "Re: <the first email's>"; this marks a written language
 
 

@@ -120,7 +120,7 @@ def test_send_marks_contacted_and_writes_followups(db):
         m = _send_first(s, lead)
         assert m.status == "sent" and m.message_id
         assert lead.status == "contacted" and lead.last_contacted_at
-        fus = list(s.scalars(select(Message).where(Message.step > 0)))
+        fus = list(s.scalars(select(Message).where(Message.step > 0).order_by(Message.step)))
         assert [f.step for f in fus] == [1, 2]
         assert all(f.status == "queued" and f.in_reply_to == m.message_id for f in fus)
         assert fus[0].subject == "Re: Vos photos à Colmar"

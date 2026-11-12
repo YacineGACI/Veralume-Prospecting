@@ -581,6 +581,9 @@ export const campaigns = {
     const v = x || (copy ? { ...copy, name: `${copy.name} (new version)`, archived: false }
       : { name: "", segment: segment || "any", step: step ?? 0, subject: "", body: "Bonjour {prenom},\n\n\n\n{signature}", attach_photo: true, asset_ids: [], archived: false });
     let picked = [...(v.asset_ids || [])];
+    // The text in each language: the main one, then its translations. The fields show `cur`.
+    let main = v.language || "fr", cur = main;
+    let texts = { [main]: { subject: v.subject, body: v.body }, ...Object.fromEntries(Object.entries(v.translations || {}).filter(([k]) => k !== main).map(([k, t]) => [k, { ...t }])) };
     const library = lib.items;
     let previewLead = null;
     const VARS = ["prenom", "agence", "ville", "lean", "nb_images", "signature"];
@@ -590,8 +593,9 @@ export const campaigns = {
           <label class="full">Name<input class="input" name="name" value="${esc(v.name)}" required></label>
           <label>For<select class="select" name="segment"><option value="any">All segments</option>${SEGS.map((k) => `<option value="${k}" ${k === v.segment ? "selected" : ""}>${KINDS_PL[k]}</option>`).join("")}</select></label>
           <label>Used as<select class="select" name="step">${[[0, "First email"], [1, "Follow-up 1"], [2, "Follow-up 2"], [-1, "Reply"]].map(([s, t]) => `<option value="${s}" ${s === v.step ? "selected" : ""}>${t}</option>`).join("")}</select></label>
-          <label class="full">Subject<input class="input" name="subject" value="${esc(v.subject)}" required></label>
-          <label class="full">Message<textarea class="input mailbody" name="body" lang="fr" required>${esc(v.body)}</textarea></label>
+          <div class="full cb-ltabs" role="tablist" aria-label="Languages" data-tlangs></div>
+          <label class="full"><span data-subj-label>Subject</span><input class="input" name="subject" value="${esc(v.subject)}"></label>
+          <label class="full"><span data-body-label>Message</span><textarea class="input mailbody" name="body" lang="${main}">${esc(v.body)}</textarea></label>
           <div class="full ins-row"><span class="small muted">Insert</span>${VARS.map((k) => `<button type="button" class="chip mono" data-ins="{${k}}">{${k}}</button>`).join("")}</div>
           <div class="full">${aiBar(ai)}</div></div>
           <div class="tpl-imgs"><div class="row"><h4>Images sent with every email</h4><span class="small muted" data-img-n></span><span class="grow"></span>
@@ -611,6 +615,26 @@ export const campaigns = {
       subject: tf.subject, body: tf.body, extra: () => ({ segment: tf.segment.value, step: +tf.step.value }),
     });
     const thumb = (id) => library.find((y) => y.id === id);
+    const drawLangs = () => {
+      const others = Object.keys(LANG).filter((k) => !texts[k]);
+      const done = (k) => k === main || (texts[k].subject?.trim() && texts[k].body?.trim());
+      $("[data-tlangs]", sheet).innerHTML = `<span class="small muted">Language</span>
+        ${Object.keys(texts).map((k) => `<button type="button" role="tab" data-tlang="${k}" aria-selected="${k === cur}">${esc(LANG[k] || k)}${k === main ? ` <span class="small muted">main</span>` : ""}${done(k) ? "" : ` <span class="lt-todo">to write</span>`}</button>`).join("")}
+        <select class="input sm" data-tlang-add aria-label="Add a language"><option value="">+ Language</option>${others.map((k) => `<option value="${k}">${esc(LANG[k])}</option>`).join("")}</select>
+        ${cur === main ? `<label class="small muted lt-main">This text is in <select class="input sm" data-tlang-main>${Object.keys(LANG).map((k) => `<option value="${k}" ${k === main ? "selected" : ""}>${esc(LANG[k])}</option>`).join("")}</select></label>`
+          : `<button type="button" class="btn ghost danger sm" data-tlang-del="${cur}">Remove ${esc(LANG[cur])}</button>`}`;
+      const name = cur === main ? "" : ` in ${LANG[cur]}`;
+      $("[data-subj-label]", sheet).textContent = `Subject${name}`;
+      $("[data-body-label]", sheet).textContent = `Message${name}`;
+    };
+    const sync = () => { if (texts[cur]) texts[cur] = { subject: tf.subject.value, body: tf.body.value }; };
+    const showLang = (k) => {
+      sync();
+      cur = k;
+      tf.subject.value = texts[k].subject || ""; tf.body.value = texts[k].body || ""; tf.body.lang = k;
+      tf.subject.placeholder = k === main ? "" : texts[main].subject; tf.body.placeholder = k === main ? "" : `The same email in ${LANG[k]}`;
+      drawLangs(); preview();
+    };
     const drawImgs = () => {
       const tot = picked.reduce((s, id) => s + (thumb(id)?.size || 0), 0);
       $("[data-img-n]", sheet).innerHTML = picked.length ? `${picked.length} · ${(tot / 1e6).toFixed(1)} MB${tot > 5e6 ? ` <span class="flag">heavy</span>` : ""}` : "none yet";
@@ -625,7 +649,7 @@ export const campaigns = {
       clearTimeout(pvTimer);
       pvTimer = setTimeout(async () => {
         try {
-          const p = await api("/api/templates/preview", { method: "POST", body: { subject: tf.subject.value, body: tf.body.value, segment: tf.segment.value, asset_ids: picked, lead_id: previewLead } });
+          const p = await api("/api/templates/preview", { method: "POST", body: { subject: tf.subject.value, body: tf.body.value, segment: tf.segment.value, asset_ids: picked, lead_id: cur === main ? previewLead : null, language: cur } });
           const sel = $("[data-prev-lead]", sheet);
           if (!sel.options.length && p.choices.length) sel.innerHTML = p.choices.map((c) => `<option value="${c.id}">${esc(c.label)}</option>`).join("");
           if (!p.lead) { $("[data-preview]", sheet).innerHTML = `<p class="small muted">No lead with a first name in this segment yet.</p>`; return; }
@@ -637,12 +661,27 @@ export const campaigns = {
       }, 250);
     };
     drawImgs();
+    drawLangs();
     preview();
-    sheet.oninput = (e) => { if (e.target.matches("[name=subject], [name=body]")) preview(); };
+    sheet.oninput = (e) => {
+      if (e.target.matches("[name=subject], [name=body]")) {
+        texts[cur][e.target.name] = e.target.value;
+        if (e.target.name === "subject" || !e.target.value.trim() || e.target.value.length < 3) drawLangs();
+        preview();
+      }
+    };
     sheet.onchange = async (e) => {
       const t = e.target;
       if (t.matches("[name=segment]")) { $("[data-prev-lead]", sheet).innerHTML = ""; previewLead = null; preview(); }
       if (t.matches("[data-prev-lead]")) { previewLead = +t.value; preview(); }
+      if (t.matches("[data-tlang-add]") && t.value) { texts[t.value] = { subject: "", body: "" }; showLang(t.value); tf.subject.focus(); }
+      if (t.matches("[data-tlang-main]") && t.value !== main) {
+        const to = t.value;
+        if (texts[to] && (texts[to].subject || texts[to].body) && !confirm(`There's already a ${LANG[to]} text: it's replaced by this one.`)) { t.value = main; return; }
+        const { [main]: m0, [to]: _, ...rest } = texts;
+        texts = { [to]: m0, ...rest };
+        main = to; showLang(to);
+      }
       if (t.matches("[data-asset-upload]")) {
         for (const file of [...t.files]) {
           try {
@@ -660,7 +699,12 @@ export const campaigns = {
       }
     };
     const save = async (f, asNew, btn) => {
-      const body = { name: f.name.value, segment: f.segment.value, step: +f.step.value, subject: f.subject.value, body: f.body.value, attach_photo: f.attach_photo.checked, asset_ids: picked, archived: f.archived.checked };
+      sync();
+      if (!texts[main].subject?.trim() || !texts[main].body?.trim()) { showLang(main); toast(`Write the ${LANG[main]} subject and message first.`, { err: true }); return; }
+      const half = Object.entries(texts).find(([k, t]) => k !== main && (t.subject?.trim() || t.body?.trim()) && !(t.subject?.trim() && t.body?.trim()));
+      if (half) { showLang(half[0]); toast(`The ${LANG[half[0]]} version needs both a subject and a message.`, { err: true }); return; }
+      const translations = Object.fromEntries(Object.entries(texts).filter(([k, t]) => k !== main && t.subject?.trim() && t.body?.trim()));
+      const body = { name: f.name.value, segment: f.segment.value, step: +f.step.value, subject: texts[main].subject, body: texts[main].body, language: main, translations, attach_photo: f.attach_photo.checked, asset_ids: picked, archived: f.archived.checked };
       if (asNew && body.name === x.name) body.name = `${x.name} (new version)`;
       await busy(btn, async () => {
         const saved = await api(x && !asNew ? `/api/templates/${x.id}` : "/api/templates", { method: x && !asNew ? "PUT" : "POST", body });
@@ -676,6 +720,11 @@ export const campaigns = {
       const b = e.target.closest("button");
       if (!b) return;
       const d = b.dataset;
+      if (d.tlang) { showLang(d.tlang); return; }
+      if (d.tlangDel) {
+        if ((texts[d.tlangDel].subject || texts[d.tlangDel].body) && !confirm(`Remove the ${LANG[d.tlangDel]} version?`)) return;
+        delete texts[d.tlangDel]; cur = main; tf.subject.value = texts[main].subject; tf.body.value = texts[main].body; showLang(main); return;
+      }
       if (d.ins) {
         const ta = document.activeElement === tf.subject ? tf.subject : tf.body;
         const at_ = ta.selectionStart ?? ta.value.length;

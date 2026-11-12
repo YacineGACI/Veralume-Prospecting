@@ -22,6 +22,7 @@ from prospecting.db import (
 )  # fmt: skip
 from prospecting.languages import LANGUAGES, of_lead
 from prospecting.mailer import MailError
+from prospecting.translations import followup_translations
 from prospecting.outreach import summary
 
 router = APIRouter(prefix="/api")
@@ -48,7 +49,8 @@ def _config(s, c: Campaign) -> dict[str, Any]:
         "review": c.review or "daily", "metric": c.metric or "reply",
         "start_on": c.start_on, "followups_on": c.followups_on is not False,
         "followup_days": C.days_of(c), "followup": _followup(C.followup_of(s, c)),
-        "followup_default": C.FOLLOWUP_BODY,
+        "followup_default": {"language": "fr", "body": C.FOLLOWUP_BODY,
+                             "translations": {k: v["body"] for k, v in followup_translations().items()}},
         "started_at": c.started_at, "ended_at": c.ended_at, "created_at": c.created_at,
         "versions": [_version(t, i) for i, t in enumerate(C.versions(s, c))],
     }  # fmt: skip
@@ -223,6 +225,21 @@ class CampaignIn(BaseModel):
     versions: list[VersionIn] | None = None
 
 
+def _only_translations(s, c: Campaign, vs: list[VersionIn]) -> bool:
+    """True when these versions are the campaign's own, unchanged but for their
+    translations (which a started campaign may still change: leads who speak a newly
+    written language can then be added)."""
+    have = {t.id: t for t in C.versions(s, c)}
+    if {v.id for v in vs} != set(have):
+        return False
+    return all(
+        (t := have[v.id]).subject == v.subject and t.body == v.body
+        and (t.language or "fr") == v.language and list(t.asset_ids or []) == list(v.asset_ids)
+        and bool(t.attach_photo) == v.attach_photo
+        for v in vs
+    )
+
+
 def _apply(s, c: Campaign, b: CampaignIn) -> None:
     draft = c.status == "draft"
     if b.name is not None:
@@ -251,6 +268,11 @@ def _apply(s, c: Campaign, b: CampaignIn) -> None:
             c.start_on = date.fromisoformat(b.start_on).isoformat() if b.start_on else None
         except ValueError as e:
             raise HTTPException(422, "The start date isn't a date") from e
+    if b.versions is not None and not draft and _only_translations(s, c, b.versions):
+        for v in b.versions:
+            t = s.get(Template, v.id)
+            t.translations = C.clean_translations(v.translations, t.language or "fr")
+        b.versions = None
     locked = [k for k in ("kind", "filters", "order", "excluded", "included", "metric", "versions")
               if getattr(b, k) is not None]  # fmt: skip
     if locked and not draft:
@@ -321,7 +343,7 @@ def create(b: CampaignIn) -> dict[str, Any]:
             C.new_version(s, c, "A", t.subject if t else "", t.body if t else "Bonjour {prenom},\n\n\n\n{signature}",
                           list(t.asset_ids or []) if t else [], bool(t and t.attach_photo))  # fmt: skip
         if b.followup is None:  # a follow-up ready to edit, in French
-            C.set_followup(s, c, "fr", C.FOLLOWUP_BODY, None)
+            C.set_followup(s, c, "fr", C.FOLLOWUP_BODY, followup_translations())
         c.followup_days = c.followup_days or C.FOLLOWUP_DAYS
         s.commit()
         return _config(s, c)
