@@ -145,28 +145,35 @@ def needed_each(rate: float) -> int:
     return math.ceil((1.96 + 0.84) ** 2 * (p1 * (1 - p1) + p2 * (1 - p2)) / (p2 - p1) ** 2)
 
 
-def _outcomes(s: Session, lead_ids: set[int]) -> dict[int, dict[str, bool]]:
-    if not lead_ids:
+def _outcomes(s: Session, sent: dict[int, Message]) -> dict[int, dict[str, bool]]:
+    """Only events since this campaign/test's first email count as outcomes."""
+    if not sent:
         return {}
+    lead_ids = set(sent)
     leads = {l.id: l for l in s.scalars(select(Lead).where(Lead.id.in_(lead_ids)))}
-    wrote = set(
-        s.scalars(select(Message.lead_id).where(Message.direction == "in",
-                                                Message.lead_id.in_(lead_ids)))
-    )  # fmt: skip
+
+    def after(lid: int, at: str | None) -> bool:
+        return bool(at and sent[lid].sent_at and
+                    mailer.local(at) >= mailer.local(sent[lid].sent_at))
+
+    wrote = {
+        m.lead_id for m in s.scalars(select(Message).where(
+            Message.direction == "in", Message.lead_id.in_(lead_ids)
+        )) if after(m.lead_id, m.sent_at or m.created_at)
+    }
     reached: dict[int, set[str]] = defaultdict(set)
-    for lid, text in s.execute(
-        select(Activity.lead_id, Activity.text)
+    for lid, at, text in s.execute(
+        select(Activity.lead_id, Activity.at, Activity.text)
         .where(Activity.kind == "status", Activity.lead_id.in_(lead_ids))
-    ):  # fmt: skip
-        reached[lid].update(_REACHED.findall(text or ""))
+    ):
+        if after(lid, at):
+            reached[lid].update(_REACHED.findall(text or ""))
     out = {}
     for lid, lead in leads.items():
-        stages = reached[lid] | ({lead.status} & REPLIED)
-        interested = bool(stages & INTERESTED)
+        interested = bool(reached[lid] & INTERESTED)
         stopped = bool(lead.do_not_contact) and not interested
         out[lid] = {
-            # a "stop" is an answer, not a win
-            "reply": (lid in wrote or bool(stages)) and not stopped,
+            "reply": lid in wrote and not stopped,
             "interested": interested,
             "stopped": stopped,
         }
@@ -189,7 +196,7 @@ def results(s: Session, exp: Experiment) -> dict[str, Any]:
             sent.setdefault(m.lead_id, m)
         elif m.status in ("queued", "approved"):
             waiting[m.template_id] += 1
-    outcome = _outcomes(s, set(sent))
+    outcome = _outcomes(s, sent)
     rows = []
     for i, t in enumerate(tpls):
         mine = [m for m in sent.values() if m.template_id == t.id]

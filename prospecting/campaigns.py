@@ -537,7 +537,7 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
     ))  # fmt: skip
     written = _written(s, c)
     sent = {lid: m for lid, m in written.items() if m.status == "sent"}
-    outcome = experiments._outcomes(s, set(sent))
+    outcome = experiments._outcomes(s, sent)
     leads = {l.id: l for l in s.scalars(select(Lead).where(Lead.id.in_([r.lead_id for r in rows])))} if rows else {}
     replies: dict[int, Message] = {}
     if sent:
@@ -545,7 +545,10 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
             select(Message).where(Message.direction == "in", Message.lead_id.in_(list(sent)))
             .order_by(Message.id)
         ):  # fmt: skip
-            replies[m.lead_id] = m
+            if m.sent_at and sent[m.lead_id].sent_at and (
+                local(m.sent_at) >= local(sent[m.lead_id].sent_at)
+            ):
+                replies[m.lead_id] = m
 
     def state(row: CampaignLead) -> tuple[str, str | None]:
         m = written.get(row.lead_id)

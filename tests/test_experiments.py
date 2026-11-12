@@ -90,15 +90,18 @@ def test_results_count_replies_and_ignore_stops(db):
     a = [lid for lid, x in sent.items() if x == "A"]
     b = [lid for lid, x in sent.items() if x == "B"]
     with db() as s:
-        s.get(Lead, a[0]).status = "replied"  # marked by hand
+        s.get(Lead, a[0]).status = "replied"  # a stage alone is not an email reply
+        s.add(Message(lead_id=a[1], direction="in", status="received",
+                      body="Interested", sent_at="2099-01-01T00:00:00+00:00"))
         s.add(Activity(lead_id=a[1], kind="status", text="contacted → interview"))
         s.get(Lead, a[1]).status = "lost"
-        s.add(Message(lead_id=b[0], direction="in", status="received", body="stop"))
+        s.add(Message(lead_id=b[0], direction="in", status="received", body="stop",
+                      sent_at="2099-01-01T00:00:00+00:00"))
         s.get(Lead, b[0]).do_not_contact = True
         s.commit()
     res = client.get("/api/experiments").json()["items"][0]["results"]
     rows = {r["letter"]: r for r in res["versions"]}
-    assert (rows["A"]["sent"], rows["A"]["replied"], rows["A"]["interested"]) == (2, 2, 1)
+    assert (rows["A"]["sent"], rows["A"]["replied"], rows["A"]["interested"]) == (2, 1, 1)
     assert (rows["B"]["replied"], rows["B"]["stopped"]) == (0, 1)
     assert res["verdict"]["state"] == "early"
     assert rows["A"]["chance_best"] > rows["B"]["chance_best"]
@@ -163,3 +166,29 @@ def test_delete_only_before_sending(db):
     assert client.delete(f"/api/experiments/{exp['id']}").status_code == 409
     with db() as s:
         assert s.get(Experiment, exp["id"]) is not None
+
+
+def test_outcomes_ignore_history_before_campaign_email(db):
+    (lid,) = _leads(db, 1)
+    with db() as s:
+        lead = s.get(Lead, lid)
+        lead.status = "contacted"
+        first = Message(lead_id=lid, direction="out", status="sent",
+                        sent_at="2026-11-06T18:02:06+00:00")
+        s.add(first)
+        s.add_all([
+            Activity(lead_id=lid, kind="status", text="contacted → replied",
+                     at="2026-11-05T14:11:39+00:00"),
+            Activity(lead_id=lid, kind="status", text="replied → interview",
+                     at="2026-11-05T14:11:40+00:00"),
+            Message(lead_id=lid, direction="in", status="received", body="Old email",
+                    sent_at="2026-11-05T14:11:41+00:00"),
+        ])
+        s.flush()
+        assert experiments._outcomes(s, {lid: first})[lid] == {
+            "reply": False, "interested": False, "stopped": False,
+        }
+        s.add(Message(lead_id=lid, direction="in", status="received", body="New reply",
+                      sent_at="2026-11-06T19:02:06+00:00"))
+        s.flush()
+        assert experiments._outcomes(s, {lid: first})[lid]["reply"]
