@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -51,6 +51,18 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="Veralume Prospecting", lifespan=lifespan)
+
+
+@app.middleware("http")
+async def fresh_page_code(request: Request, call_next):
+    """The page and its scripts: browsers ask each time whether they changed (a quick
+    "not modified" when not), so an update shows without a forced reload."""
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 settings.photos_dir.mkdir(parents=True, exist_ok=True)
 app.mount("/photos", StaticFiles(directory=settings.photos_dir), name="photos")
 app.mount("/static", StaticFiles(directory=STATIC), name="static")
