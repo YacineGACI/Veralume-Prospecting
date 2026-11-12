@@ -347,6 +347,9 @@ def start(s: Session, c: Campaign) -> int:
     for t in tpls:
         if not t.subject.strip() or not t.body.strip():
             raise CampaignError(f"Version “{t.name}” needs a subject and a text.")
+    fu = followup_of(s, c)
+    if c.followups_on is not False and (fu is None or not fu.body.strip()):
+        raise CampaignError("Set the automations first (step 3): write the follow-up, or turn it off.")
     leads, _ = audience(s, c)
     if not leads:
         raise CampaignError("No lead matches. Loosen the filters in step 1.")

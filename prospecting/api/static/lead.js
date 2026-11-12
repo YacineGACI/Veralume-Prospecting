@@ -111,7 +111,7 @@ function conversation(l, f) {
   const msgs = l.messages.filter((m) => m.status !== "cancelled" || (m.step === 1 && m.campaign_id)).slice().reverse();
   const unsent = f.files.filter((x) => x.kind === "retouched" && !x.sent_at).length;
   const replied = l.messages.some((m) => m.direction === "in");
-  const plan = (l.followup_plan || []).map((p) => `<div class="msg sched"><span>${small(I.clock)} <b>Follow-up</b> goes out on its own on ${esc(new Date(p.due_at).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }))}, if ${esc(first(l))} hasn't replied · ${esc(p.campaign)}</span></div>`).join("");
+  const plan = (l.followup_plan || []).map((p) => `<div class="msg sched"><span>${small(I.clock)} <b>Follow-up</b> (automation) goes out on its own on ${esc(new Date(p.due_at).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }))}, if ${esc(first(l))} hasn't replied · ${esc(p.campaign)}</span></div>`).join("");
   const card = (m) => {
     const label = m.step === 1 && m.campaign_id ? "Follow-up" : STEP[m.step] || "Email";
     if (m.status === "cancelled") return `<div class="msg sched"><span>${small(I.x)} <b>${esc(label)} not sent</b>: ${esc(m.error || "cancelled")}</span></div>`;

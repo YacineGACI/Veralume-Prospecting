@@ -737,6 +737,10 @@ pre.env{font:12.5px var(--mono);background:var(--bg);border:1px solid var(--line
 .cr-lg>div{display:grid;gap:2px}
 /* the follow-up: builder block, campaign card, edit sheet */
 .cb-fu{display:grid;gap:10px}
+.auto{border:1px solid var(--line);border-radius:12px;padding:12px 14px;background:var(--raise)}
+.auto:not(.on){opacity:.8}
+.auto-h{display:flex;align-items:center;gap:8px}
+.auto-h .check{flex:1;margin:0}
 .fu-ed{display:grid;gap:8px}
 .fu-ed .cb-ltabs{margin:0}
 .fu-days{display:flex;flex-wrap:wrap;align-items:center;gap:6px}
@@ -769,7 +773,7 @@ pre.env{font:12.5px var(--mono);background:var(--bg);border:1px solid var(--line
 .cb-big2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
 .cb-big2 b{display:block;font:500 28px var(--mono)}
 .cb-big2 span{font-size:12px;opacity:.8}
-.cb-sum dl{margin:0;display:grid;grid-template-columns:62px minmax(0,1fr);gap:6px 10px;font-size:13px}
+.cb-sum dl{margin:0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 10px;font-size:13px}
 .cb-sum dt{opacity:.7}
 .cb-sum dd{margin:0}
 .cb-prob{text-align:left;border:0;border-radius:9px;padding:8px 10px;background:rgba(255,122,102,.22);color:inherit;font-size:13px;cursor:pointer}

@@ -159,3 +159,19 @@ def test_a_due_day_on_a_weekend_or_evening_moves_to_the_next_sending_hours():
     assert mailer.first_slot(tue_early) == datetime(2026, 11, 17, 9, 0, tzinfo=tz)
     tue = datetime(2026, 11, 17, 11, 0, tzinfo=tz)
     assert mailer.first_slot(tue) == tue
+
+
+def test_a_campaign_starts_only_with_its_automations_set(db):
+    from prospecting.db import Template, session
+
+    leads(db, 2)
+    c = draft(size=10)
+    client.put(f"/api/campaigns/{c['id']}", json={"versions": [{"name": "A", **FR}]})
+    with session() as s:  # the follow-up is on but its text is gone
+        for t in s.scalars(select(Template).where(Template.campaign_id == c["id"], Template.step == 1)):
+            t.archived = True
+        s.commit()
+    r = client.post(f"/api/campaigns/{c['id']}/start")
+    assert r.status_code == 409 and "automations" in r.json()["detail"]
+    client.put(f"/api/campaigns/{c['id']}", json={"followups_on": False})  # turned off: fine
+    assert client.post(f"/api/campaigns/{c['id']}/start").status_code == 200
