@@ -1,4 +1,4 @@
-"""The first photographer email, its follow-up and the signature in the 13 languages of
+"""The first photographer email, its two follow-ups and the signature in the 13 languages of
 the leads (written 2026-11-12; edit them in the app).
 
 `fill_known` adds them to any template whose French text is exactly one of these, and to
@@ -245,6 +245,88 @@ FOLLOWUP: dict[str, str] = {
           "Hezký den\n\n{signature}",
 }
 
+# The second and last follow-up (10 days after the first one, by default).
+FOLLOWUP2: dict[str, str] = {
+    "fr": "Bonjour {prenom},\n\n"
+          "Dernier message de ma part, promis.\n\n"
+          "Si vous voulez voir ce que Veralume donne sur votre travail, envoyez-moi simplement une "
+          "seule de vos photos en réponse : je vous la renvoie retouchée, gratuitement.\n\n"
+          "Sinon, pas de souci, je ne vous relancerai plus.\n\n"
+          "Bonne continuation,\n\n{signature}",
+    "en": "Hi {prenom},\n\n"
+          "This is my last message, I promise.\n\n"
+          "If you'd like to see what Veralume does with your work, just reply with a single photo: "
+          "I'll send it back edited, for free.\n\n"
+          "If not, no worries, I won't follow up again.\n\n"
+          "All the best,\n\n{signature}",
+    "de": "Hallo {prenom},\n\n"
+          "das ist versprochen meine letzte Nachricht.\n\n"
+          "Wenn Sie sehen möchten, was Veralume aus Ihrer Arbeit macht, schicken Sie mir einfach ein "
+          "einziges Foto als Antwort: Ich sende es Ihnen kostenlos bearbeitet zurück.\n\n"
+          "Falls nicht, kein Problem, dann melde ich mich nicht mehr.\n\n"
+          "Alles Gute\n\n{signature}",
+    "nl": "Hallo {prenom},\n\n"
+          "Dit is beloofd mijn laatste bericht.\n\n"
+          "Wilt u zien wat Veralume met uw werk doet? Stuur me dan gewoon één foto als antwoord: ik "
+          "stuur hem gratis bewerkt terug.\n\n"
+          "Zo niet, geen probleem, dan hoort u verder niets meer van mij.\n\n"
+          "Veel succes verder,\n\n{signature}",
+    "it": "Buongiorno {prenom},\n\n"
+          "questo è il mio ultimo messaggio, promesso.\n\n"
+          "Se vuole vedere cosa fa Veralume con il suo lavoro, mi invii semplicemente una sola foto "
+          "in risposta: gliela rimando ritoccata, gratis.\n\n"
+          "Altrimenti nessun problema, non le scriverò più.\n\n"
+          "Buon lavoro,\n\n{signature}",
+    "es": "Hola, {prenom}:\n\n"
+          "Este es mi último mensaje, se lo prometo.\n\n"
+          "Si quiere ver qué hace Veralume con su trabajo, envíeme una sola foto en respuesta: se la "
+          "devuelvo retocada, gratis.\n\n"
+          "Si no, no se preocupe, no volveré a escribirle.\n\n"
+          "Un saludo y mucho éxito,\n\n{signature}",
+    "pt": "Olá {prenom},\n\n"
+          "Esta é a minha última mensagem, prometo.\n\n"
+          "Se quiser ver o que o Veralume faz com o seu trabalho, basta enviar-me uma única foto em "
+          "resposta: devolvo-a editada, gratuitamente.\n\n"
+          "Se não, não há problema, não voltarei a escrever.\n\n"
+          "Votos de bom trabalho,\n\n{signature}",
+    "sv": "Hej {prenom},\n\n"
+          "Det här är mitt sista meddelande, jag lovar.\n\n"
+          "Om du vill se vad Veralume gör med ditt arbete, svara bara med en enda bild: jag skickar "
+          "tillbaka den redigerad, gratis.\n\n"
+          "Annars är det helt okej, jag hör inte av mig igen.\n\n"
+          "Lycka till,\n\n{signature}",
+    "da": "Hej {prenom}\n\n"
+          "Dette er min sidste besked, det lover jeg.\n\n"
+          "Hvis du vil se, hvad Veralume gør med dit arbejde, så svar bare med et enkelt billede: Jeg "
+          "sender det redigeret tilbage, gratis.\n\n"
+          "Ellers er det helt fint, jeg skriver ikke igen.\n\n"
+          "Held og lykke\n\n{signature}",
+    "no": "Hei {prenom},\n\n"
+          "Dette er min siste melding, jeg lover.\n\n"
+          "Hvis du vil se hva Veralume gjør med arbeidet ditt, er det bare å svare med ett enkelt "
+          "bilde: Jeg sender det tilbake redigert, gratis.\n\n"
+          "Hvis ikke, helt greit, jeg tar ikke kontakt igjen.\n\n"
+          "Lykke til,\n\n{signature}",
+    "fi": "Hei {prenom},\n\n"
+          "Tämä on viimeinen viestini, lupaan.\n\n"
+          "Jos haluat nähdä, mitä Veralume tekee työllesi, vastaa vain lähettämällä yksi kuva: "
+          "lähetän sen takaisin käsiteltynä, maksutta.\n\n"
+          "Jos et, ei hätää, en ota enää yhteyttä.\n\n"
+          "Kaikkea hyvää,\n\n{signature}",
+    "pl": "Dzień dobry {prenom},\n\n"
+          "to moja ostatnia wiadomość, obiecuję.\n\n"
+          "Jeśli chcieliby Państwo zobaczyć, co Veralume zrobi z Państwa pracą, wystarczy "
+          "odpowiedzieć, przesyłając jedno zdjęcie: odeślę je obrobione, bezpłatnie.\n\n"
+          "Jeśli nie, nie ma problemu, nie będę się już odzywać.\n\n"
+          "Pozdrawiam serdecznie\n\n{signature}",
+    "cs": "Dobrý den {prenom},\n\n"
+          "tohle je moje poslední zpráva, slibuji.\n\n"
+          "Pokud chcete vidět, co Veralume udělá s vaší prací, stačí mi v odpovědi poslat jedinou "
+          "fotografii: pošlu vám ji zpět upravenou, zdarma.\n\n"
+          "Pokud ne, nevadí, už se nebudu ozývat.\n\n"
+          "Hezký den\n\n{signature}",
+}
+
 SIGNATURE: dict[str, str] = {
     "fr": "Yacine\nCréateur de Veralume",
     "en": "Yacine\nFounder of Veralume",
@@ -268,9 +350,10 @@ def _norm(text: str | None) -> str:
     return re.sub(r"\s+", " ", (text or "").replace("’", "'")).strip()
 
 
-def followup_translations() -> dict[str, dict[str, str]]:
-    """The follow-up in every language but French, as a template's translations."""
-    return {k: {"subject": FOLLOWUP_SUBJECT, "body": v} for k, v in FOLLOWUP.items() if k != "fr"}
+def followup_translations(step: int = 1) -> dict[str, dict[str, str]]:
+    """Follow-up 1 or 2 in every language but French, as a template's translations."""
+    texts = FOLLOWUP if step == 1 else FOLLOWUP2
+    return {k: {"subject": FOLLOWUP_SUBJECT, "body": v} for k, v in texts.items() if k != "fr"}
 
 
 def first_email_translations() -> dict[str, dict[str, str]]:
@@ -283,7 +366,9 @@ def known_translations(subject: str, body: str, step: int) -> dict[str, dict[str
             and _norm(body) == _norm(FIRST_EMAIL["fr"][1]):
         return first_email_translations()
     if step == 1 and _norm(body) == _norm(FOLLOWUP["fr"]):
-        return followup_translations()
+        return followup_translations(1)
+    if step == 2 and _norm(body) == _norm(FOLLOWUP2["fr"]):
+        return followup_translations(2)
     return None
 
 

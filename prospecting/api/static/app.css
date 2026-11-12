@@ -748,6 +748,7 @@ pre.env{font:12.5px var(--mono);background:var(--bg);border:1px solid var(--line
 .fu-days input.sm{width:64px;padding:4px 8px}
 .cr-fu{display:grid;gap:10px;margin-bottom:12px}
 .cr-fu .fu-prev{margin:0;font-style:italic;overflow-wrap:anywhere}
+.cr-auto{display:grid;gap:8px;padding-top:12px;border-top:1px solid var(--line)}
 .cr-fu-n{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:8px}
 .cr-fu-n>div{background:var(--raise);border:1px solid var(--line);border-radius:10px;padding:8px 12px;display:grid}
 .cr-fu-n b{font:500 20px var(--mono)}

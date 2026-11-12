@@ -26,14 +26,22 @@ const coveredLangs = (vs) => vs.reduce((acc, v) => { const mine = vLangs(v).filt
 const langList = (ls) => ls.map((l) => LANG[l] || l).join(", ");
 const usesLean = (vs) => vs.some((v) => `${v.subject} ${v.body}`.includes("{lean}"));
 
-// The follow-up: one text per language ({language, body, translations: {lang: text}}); its
+// The follow-ups (automations): 1 after the first email, 2 (the last) after follow-up 1.
+// Each has one text per language ({language, body, translations: {lang: text}}); its
 // subject is always "Re: " + the first email's.
-const fuOf = (c) => c.followup || { language: "fr", body: c.followup_default || "", translations: {} };
+const FU = {
+  1: { on: "followups_on", days: "followup_days", text: "followup", def: "followup_default", status: "followup_status", d: 7, title: "Follow-up 1 if they don't reply", after: "the first email" },
+  2: { on: "followup2_on", days: "followup2_days", text: "followup2", def: "followup2_default", status: "followup2_status", d: 10, title: "Follow-up 2, the last one, if they still don't reply", after: "follow-up 1" },
+};
+const fuOn = (c, k) => c.followups_on !== false && (k === 1 || c.followup2_on !== false);
+const fuDays = (c, k) => c[FU[k].days] || FU[k].d;
+const fuOf = (c, k) => c[FU[k].text] || structuredClone(c[FU[k].def] || { language: "fr", body: "", translations: {} });
 const fuText = (fu, l) => (l === (fu.language || "fr") ? fu.body : fu.translations?.[l] || "");
-const fuMissing = (c) => coveredLangs(c.versions).filter((l) => !fuText(fuOf(c), l).trim());
+const fuMissing = (c, k) => coveredLangs(c.versions).filter((l) => !fuText(fuOf(c, k), l).trim());
 const day = (iso) => new Date(iso).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
-function setFuText(c, l, text) {
-  const fu = (c.followup = fuOf(c));
+const fuSummary = (c) => (!fuOn(c, 1) ? "none" : fuOn(c, 2) ? `follow-ups after ${fuDays(c, 1)} days, then ${fuDays(c, 2)} more` : `follow-up after ${plural(fuDays(c, 1), "day")}`);
+function setFuText(c, k, l, text) {
+  const fu = (c[FU[k].text] = fuOf(c, k));
   if (l !== (fu.language || "fr") && !fu.body.trim()) { // nothing in the main language: this one becomes it
     const { [l]: _, ...rest } = fu.translations || {};
     Object.assign(fu, { language: l, body: text, translations: rest });
@@ -41,25 +49,27 @@ function setFuText(c, l, text) {
   else fu.translations = { ...(fu.translations || {}), [l]: text };
 }
 
-/** The follow-up text, with a tab per language the first emails are written in. */
-function fuEditor(c, lang) {
-  const fu = fuOf(c), langs = coveredLangs(c.versions);
+/** A follow-up's text, with a tab per language the first emails are written in. */
+function fuEditor(c, k, lang) {
+  const fu = fuOf(c, k), langs = coveredLangs(c.versions);
   const l = langs.includes(lang) ? lang : langs[0];
-  const miss = fuMissing(c);
+  const miss = fuMissing(c, k);
   return `<div class="fu-ed">
-    ${langs.length > 1 ? `<div class="cb-ltabs" role="tablist" aria-label="Follow-up language">${langs.map((x) => `<button type="button" role="tab" data-fulang="${x}" aria-selected="${x === l}">${esc(LANG[x] || x)}${fuText(fu, x).trim() ? "" : ` <span class="lt-todo">to write</span>`}</button>`).join("")}</div>` : ""}
-    <label class="small muted">The follow-up${langs.length > 1 ? ` in ${esc(LANG[l] || l)}` : ""}<textarea class="input mailbody" rows="10" data-fubody="${l}" lang="${l}" placeholder="${langs.length > 1 && l !== (fu.language || "fr") ? `The follow-up in ${esc(LANG[l] || l)}` : ""}">${esc(fuText(fu, l))}</textarea></label>
+    ${langs.length > 1 ? `<div class="cb-ltabs" role="tablist" aria-label="Language of follow-up ${k}">${langs.map((x) => `<button type="button" role="tab" data-fulang="${x}" data-fustep="${k}" aria-selected="${x === l}">${esc(LANG[x] || x)}${fuText(fu, x).trim() ? "" : ` <span class="lt-todo">to write</span>`}</button>`).join("")}</div>` : ""}
+    <label class="small muted">Follow-up ${k}${langs.length > 1 ? ` in ${esc(LANG[l] || l)}` : ""}<textarea class="input mailbody" rows="9" data-fubody="${l}" data-fustep="${k}" lang="${l}" placeholder="${langs.length > 1 && l !== (fu.language || "fr") ? `Follow-up ${k} in ${esc(LANG[l] || l)}` : ""}">${esc(fuText(fu, l))}</textarea></label>
     <p class="small muted" style="margin:0">Subject: “Re: ” and the first email's, in the same conversation. No images. Your {signature} and the opt-out line are added as on the first email.</p>
-    ${miss.length ? `<div class="note warn"><span>Not written in ${esc(langList(miss))} yet: those leads won't get a follow-up. Nobody gets one in a language they don't speak.</span></div>` : ""}</div>`;
+    ${miss.length ? `<div class="note warn"><span>Not written in ${esc(langList(miss))} yet: those leads won't get follow-up ${k}. Nobody gets one in a language they don't speak.</span></div>` : ""}</div>`;
 }
 
-function fuSection(c) {
-  return `<div class="cb-fu auto ${c.followups_on ? "on" : ""}">
-    <div class="auto-h"><label class="check"><input type="checkbox" class="chk" data-followups ${c.followups_on ? "checked" : ""}> <b>Follow-up if they don't reply</b></label><span class="pill ${c.followups_on ? "st-pilot" : ""}">${c.followups_on ? "On" : "Off"}</span></div>
-    <p class="small muted" style="margin:0">One email, sent on its own as a reply to the first one, in the lead's language.</p>
-    ${c.followups_on ? `<label class="fu-days small muted"><span>after</span><input class="input sm" type="number" min="1" max="30" data-fudays value="${c.followup_days || 7}" aria-label="Days after the first email"><span>days, if they haven't replied</span></label>
-    <p class="small muted" style="margin:0">It goes out Monday to Friday 9:00–18:00, a few minutes apart, even though you send first emails yourself.</p>
-    ${fuEditor(c, B.fuLang)}` : ""}</div>`;
+function fuSection(c, k) {
+  const on = fuOn(c, k), blocked = k === 2 && !fuOn(c, 1);
+  return `<div class="cb-fu auto ${on ? "on" : ""}" data-fu="${k}">
+    <div class="auto-h"><label class="check"><input type="checkbox" class="chk" data-followups="${k}" ${c[FU[k].on] !== false ? "checked" : ""} ${blocked ? "disabled" : ""}> <b>${FU[k].title}</b></label><span class="pill ${on ? "st-pilot" : ""}">${on ? "On" : "Off"}</span></div>
+    ${blocked ? `<p class="small muted" style="margin:0">Needs follow-up 1: it goes ${fuDays(c, 2)} days after it.</p>`
+      : `<p class="small muted" style="margin:0">${k === 1 ? "One email, sent on its own as a reply to the first one, in the lead's language." : "A short last email, to those who answered neither. After it, nothing more goes to them."}</p>`}
+    ${on ? `<label class="fu-days small muted"><span>after</span><input class="input sm" type="number" min="1" max="30" data-fudays="${k}" value="${fuDays(c, k)}" aria-label="Days after ${FU[k].after}"><span>days after ${FU[k].after}, if they haven't replied</span></label>
+    ${k === 1 ? `<p class="small muted" style="margin:0">Follow-ups go out Monday to Friday 9:00–18:00, a few minutes apart, even though you send first emails yourself.</p>` : ""}
+    ${fuEditor(c, k, (B.fuLang || {})[k])}` : ""}</div>`;
 }
 
 // --- the list --------------------------------------------------------------------------
@@ -139,8 +149,9 @@ function payload() {
   return {
     name: c.name, kind: c.kind, filters: c.filters, size: c.size, order: c.order, excluded: c.excluded, included: c.included,
     daily_cap: c.daily_cap, review: c.review, metric: c.metric, start_on: c.start_on || "", followups_on: c.followups_on,
-    followup_days: c.followup_days || 7,
+    followup_days: fuDays(c, 1), followup2_on: c.followup2_on !== false, followup2_days: fuDays(c, 2),
     followup: c.followup?.body?.trim() ? c.followup : undefined, // an empty text isn't saved
+    followup2: c.followup2?.body?.trim() ? c.followup2 : undefined,
     versions: c.versions.map((v) => ({ id: v.id || null, name: v.name, subject: v.subject, body: v.body, asset_ids: v.asset_ids, attach_photo: v.attach_photo, language: mainLang(v), translations: v.translations || {} })),
   };
 }
@@ -198,7 +209,7 @@ function drawSteps() {
   const steps = [
     ["who", "Who", a ? `${a.chosen} of ${a.matching.toLocaleString("en")} leads` : "…"],
     ["emails", n > 1 ? "Emails · A/B test" : "Email", n > 1 ? `${n} versions to compare` : "one version"],
-    ["automations", "Automations", c.followups_on ? `follow-up after ${plural(c.followup_days || 7, "day")}` : "none"],
+    ["automations", "Automations", fuSummary(c)],
     ["sending", "Sending", `${c.daily_cap} a day · ${B.manual ? "you send each one" : c.review === "auto" ? "approved once" : "you review daily"}`],
   ];
   const el = $("[data-steps]");
@@ -498,7 +509,7 @@ function wireEmails() {
 function stepAutomations() {
   return `<h2>Automations</h2>
     <p class="muted">What the app does on its own for this campaign. Set them now; you can change them any time, even once it's running, from the campaign page.</p>
-    ${fuSection(B.c)}`;
+    ${fuSection(B.c, 1)}${fuSection(B.c, 2)}`;
 }
 
 function stepSending() {
@@ -532,10 +543,11 @@ function problems() {
   });
   const left = Object.values(a?.left_out || {}).reduce((x, y) => x + y, 0);
   if (left) out.push(["emails", `${left} matching leads left out: no text in their language yet.`, true]);
-  if (c.followups_on) {
-    const miss = fuMissing(c);
-    if (miss.length === coveredLangs(c.versions).length) out.push(["automations", "The follow-up automation has no text: write it, or turn it off."]);
-    else if (miss.length) out.push(["automations", `No follow-up in ${langList(miss)} yet: those leads get none.`, true]);
+  for (const k of [1, 2]) {
+    if (!fuOn(c, k)) continue;
+    const miss = fuMissing(c, k);
+    if (miss.length === coveredLangs(c.versions).length) out.push(["automations", `Follow-up ${k} has no text: write it, or turn it off.`]);
+    else if (miss.length) out.push(["automations", `No follow-up ${k} in ${langList(miss)} yet: those leads get none.`, true]);
   }
   if (c.versions.length > 1 && a && a.chosen / c.versions.length < 20) out.push(["who", `Only ${Math.floor(a.chosen / c.versions.length)} leads per version: too few to tell versions apart. Aim for 40 or more each.`, true]);
   return out;
@@ -557,7 +569,7 @@ function drawSummary() {
     <dl><dt>Who</dt><dd>${esc(KINDS_PL[c.kind])}${filt.length ? `: ${esc(filt.join(" · "))}` : ""}</dd>
       <dt>Order</dt><dd>${esc({ small: "Small and new first", score: "Best score first", random: "At random" }[c.order])}</dd>
       <dt>Emails</dt><dd>${c.versions.length > 1 ? `${c.versions.length} versions, ${Math.round(100 / c.versions.length)} % each` : "One version"}${nImg ? ` · ${plural(nImg, "image")}` : ""} · in ${esc(langList(coveredLangs(c.versions)))}</dd>
-      <dt>Automations</dt><dd>${c.followups_on ? `follow-up after ${plural(c.followup_days || 7, "day")} if no reply` : "none"}</dd>
+      <dt>Automations</dt><dd>${esc(fuSummary(c))}${fuOn(c, 1) ? ", if no reply" : ""}</dd>
       <dt>Sending</dt><dd>${c.daily_cap} a day${c.start_on ? `, from ${esc(new Date(c.start_on).toLocaleDateString("en-GB", { day: "numeric", month: "short" }))}` : ""} · ${B.manual !== false ? "you send each one" : c.review === "auto" ? "approved once" : "you approve each morning"}</dd></dl>
     ${probs.map(([step, t, soft]) => `<button class="cb-prob ${soft ? "soft" : ""}" data-go="${step}">${esc(t)}</button>`).join("")}
     <button class="btn cb-go" data-start ${blocking.length ? "disabled" : ""}>Start campaign</button></section>
@@ -573,7 +585,7 @@ function confirmStart() {
       <li>${small(I.check)} <span><b>${plural(a.chosen, "lead")}</b> get ${c.versions.length > 1 ? `one of <b>${c.versions.length} versions</b>, at random` : "the email"}.</span></li>
       <li>${small(I.check)} <span><b>${c.daily_cap} a day</b>, ${startsLater ? `from ${esc(c.start_on)}` : "from today, inside sending hours"}: about ${plural(workdays(a.chosen, c.daily_cap), "working day")}.</span></li>
       <li>${small(I.check)} <span>${c.review === "auto" ? "First emails go out <b>without asking you</b>." : "Each morning's emails <b>wait for you in Today</b> before anything goes out."}</span></li>
-      <li>${small(I.check)} <span>${c.followups_on ? `<b>Automation:</b> no reply after <b>${plural(c.followup_days || 7, "day")}</b>, the follow-up goes out <b>on its own</b>, in their language.` : "<b>No automation</b>: nothing goes out on its own."} You can change automations any time from the campaign page.</span></li>
+      <li>${small(I.check)} <span>${fuOn(c, 1) ? `<b>Automations:</b> no reply after <b>${plural(fuDays(c, 1), "day")}</b>, follow-up 1 goes out <b>on its own</b>, in their language${fuOn(c, 2) ? `; still none <b>${plural(fuDays(c, 2), "day")}</b> later, follow-up 2, the last one` : ""}.` : "<b>No automation</b>: nothing goes out on its own."} You can change automations any time from the campaign page.</span></li>
       <li>${small(I.check)} <span>The list of leads is fixed when you start. You can add more later, pause, or stop.</span></li></ul>
       <div class="row"><span class="grow"></span><button class="btn" data-close>Not yet</button><button class="btn primary" data-go-start>Start</button></div></div>`, { narrow: true });
   sheet.onclick = async (e) => {
@@ -601,8 +613,8 @@ function onBuilderInput(e) {
   if (t.dataset.f === "name") { c.name = t.value; save(); return; }
   if (t.dataset.f === "daily_cap") { c.daily_cap = Math.max(1, Math.min(60, +t.value || 1)); save(); drawSteps(); return; }
   if (t.dataset.f === "start_on") { c.start_on = t.value || null; save(); drawSummary(); return; }
-  if (t.dataset.fubody) { setFuText(c, t.dataset.fubody, t.value); save(); drawSummary(); return; }
-  if (t.matches("[data-fudays]")) { c.followup_days = Math.max(1, Math.min(30, +t.value || 7)); save(); drawSteps(); return; }
+  if (t.dataset.fubody) { setFuText(c, +t.dataset.fustep, t.dataset.fubody, t.value); save(); drawSummary(); return; }
+  if (t.dataset.fudays) { const k = +t.dataset.fudays; c[FU[k].days] = Math.max(1, Math.min(30, +t.value || FU[k].d)); save(); drawSteps(); return; }
   if (t.dataset.sig) {
     B.sigs[t.dataset.sig] = t.value;
     clearTimeout(B.sigTimer);
@@ -664,7 +676,7 @@ async function onBuilderClick(e) {
   if (t.matches("label.cb-row")) return;
   if (d.go) { await flushSave(); B.step = d.go; drawSteps(); drawStep(); $("[data-step]")?.scrollIntoView({ block: "start", behavior: "smooth" }); return; }
   if (d.start !== undefined) return confirmStart();
-  if (d.fulang) { B.fuLang = d.fulang; drawFu(); $("[data-fubody]")?.focus(); return; }
+  if (d.fulang) { const k = +d.fustep; B.fuLang = { ...(B.fuLang || {}), [k]: d.fulang }; drawFu(k); $(`[data-fubody][data-fustep="${k}"]`)?.focus(); return; }
   if (d.delete !== undefined) {
     if (d.confirm !== "1") { d.confirm = "1"; t.textContent = "Click again to delete"; return; }
     await api(`/api/campaigns/${c.id}`, { method: "DELETE" });
@@ -756,15 +768,15 @@ function onBuilderChange(e) {
     else c.excluded = [...new Set([...c.excluded, id])];
     save(); refreshAudience();
   }
-  else if (t.matches("[data-followups]")) { c.followups_on = t.checked; save(); drawFu(); drawSteps(); }
+  else if (t.matches("[data-followups]")) { c[FU[+t.dataset.followups].on] = t.checked; save(); drawFu(1); drawFu(2); drawSteps(); }
 }
 
-/** Redraw the follow-up block alone (keeps the version editor and its preview as they are). */
-function drawFu() {
-  const el = $(".cb-fu");
+/** Redraw one follow-up block alone (keeps the rest of the step as it is). */
+function drawFu(k) {
+  const el = $(`.cb-fu[data-fu="${k}"]`);
   if (!el) return;
   const tmp = document.createElement("div");
-  tmp.innerHTML = fuSection(B.c);
+  tmp.innerHTML = fuSection(B.c, k);
   el.replaceWith(tmp.firstElementChild);
 }
 
@@ -782,7 +794,7 @@ function wire() {
 
 const STATE = {
   not_sent: ["Not sent yet", ""], to_review: ["Written, not sent", "todo"], approved: ["Approved, going out", ""],
-  waiting: ["Sent, no reply yet", ""], followed_up: ["Followed up, no reply yet", ""], replied: ["Replied", "ok"], interested: ["Interested", "ok"],
+  waiting: ["Sent, no reply yet", ""], followed_up: ["Followed up, no reply yet", ""], followed_up_2: ["Followed up twice, no reply", ""], replied: ["Replied", "ok"], interested: ["Interested", "ok"],
   stopped: ["Asked to stop", "bad"], failed: ["Not sent (error)", "bad"], skipped: ["Skipped (contacted another way)", ""],
 };
 let leadFilter = "to_send";
@@ -803,7 +815,7 @@ function renderResults(c) {
   const toSend = r.leads.filter((l) => TO_SEND.includes(l.state)).map((l) => l.id);
   const counts = { to_send: toSend.length, waiting: t.sent - t.replied - t.stopped, replied: t.replied + t.stopped, all: t.leads };
   if (!counts[leadFilter] && leadFilter !== "all") leadFilter = counts.to_send ? "to_send" : counts.replied ? "replied" : counts.waiting ? "waiting" : "all";
-  const show = r.leads.filter((l) => leadFilter === "all" || (leadFilter === "replied" ? ["replied", "interested", "stopped"].includes(l.state) : leadFilter === "to_send" ? TO_SEND.includes(l.state) : leadFilter === "waiting" ? ["waiting", "followed_up"].includes(l.state) : l.state === leadFilter));
+  const show = r.leads.filter((l) => leadFilter === "all" || (leadFilter === "replied" ? ["replied", "interested", "stopped"].includes(l.state) : leadFilter === "to_send" ? TO_SEND.includes(l.state) : leadFilter === "waiting" ? ["waiting", "followed_up", "followed_up_2"].includes(l.state) : l.state === leadFilter));
   const vcard = (v, i) => {
     const tv = test?.versions.find((x) => x.template_id === v.template_id);
     const lead = test && test.leader === v.letter && t.sent;
@@ -860,7 +872,7 @@ function renderResults(c) {
       else if (d.dup !== undefined) await busy(b, async () => { const x = await api(`/api/campaigns/${c.id}/duplicate`, { method: "POST" }); location.hash = `campaign/${x.id}`; });
       else if (d.more !== undefined) addLeads(c);
       else if (d.settings !== undefined) liveSettings(c);
-      else if (d.fuEdit !== undefined) editFollowup(c);
+      else if (d.fuEdit) editFollowup(c, +d.fuEdit);
       else if (d.trEdit) editTranslations(c, +d.trEdit);
       else if (d.winner) {
         if (d.confirm !== "1") { d.confirm = "1"; b.textContent = `Confirm: everyone left gets ${d.letter}`; return; }
@@ -931,17 +943,20 @@ function liveSettings(c) {
 // --- the follow-up, on a started campaign -----------------------------------------------------
 
 function fuCard(c) {
-  const st = c.followup_status || {}, on = c.followups_on && c.followup;
-  const miss = Object.entries(st.missing || {});
+  const row = (k) => {
+    const st = c[FU[k].status] || {}, on = fuOn(c, k) && c[FU[k].text];
+    const miss = Object.entries(st.missing || {}), text = c[FU[k].text];
+    return `<div class="cr-auto"><div class="row auto-h"><b style="flex:1">${FU[k].title}</b>
+        <span class="pill ${on ? "st-pilot" : ""}">${on ? `On, ${plural(fuDays(c, k), "day")} after ${FU[k].after}` : "Off"}</span>
+        <button class="btn sm" data-fu-edit="${k}">${text ? "Edit" : "Write it"}</button></div>
+      ${text ? `<p class="small muted fu-prev">“${esc(text.body.replace(/\s+/g, " ").slice(0, 200))}${text.body.length > 200 ? "…" : ""}”</p>`
+        : `<div class="note warn"><span><b>Not written yet</b>, so nobody gets it. Write it (a ready-made text in every language is waiting).</span></div>`}
+      ${on ? `<div class="cr-fu-n"><div><b>${st.sent || 0}</b><span>sent</span></div><div><b>${st.waiting || 0}</b><span>going out now</span></div><div><b>${st.later || 0}</b><span>planned${st.next_at ? `, next ${esc(day(st.next_at))}` : ""}</span></div><div><b>${st.replied || 0}</b><span>not needed: replied</span></div></div>` : ""}
+      ${on && miss.length ? `<div class="note warn"><span>Not written in ${esc(miss.map(([l, n]) => `${LANG[l] || l} (${plural(n, "lead")})`).join(", "))}: they don't get it until you add it.</span></div>` : ""}</div>`;
+  };
   return `<section class="card cr-fu"><div class="row"><h2 style="flex:1;margin:0">Automations</h2><span class="small muted">what the app does on its own · change them any time</span></div>
-    <div class="row auto-h"><b style="flex:1">Follow-up if they don't reply</b>
-      <span class="pill ${on ? "st-pilot" : ""}">${on ? `On, after ${plural(c.followup_days, "day")}` : "Off"}</span>
-      <button class="btn sm" data-fu-edit>${c.followup ? "Edit" : "Write it"}</button></div>
-    ${c.followup ? `<p class="small muted fu-prev">“${esc(c.followup.body.replace(/\s+/g, " ").slice(0, 220))}${c.followup.body.length > 220 ? "…" : ""}”</p>`
-      : `<div class="note warn"><span><b>No follow-up written yet</b>, so nobody gets one. Write it (a ready-made text is waiting) and the leads who haven't replied get it ${plural(c.followup_days, "day")} after their first email.</span></div>`}
-    ${on ? `<div class="cr-fu-n"><div><b>${st.sent || 0}</b><span>sent</span></div><div><b>${st.waiting || 0}</b><span>going out now</span></div><div><b>${st.later || 0}</b><span>planned${st.next_at ? `, next ${esc(day(st.next_at))}` : ""}</span></div><div><b>${st.replied || 0}</b><span>not needed: replied</span></div></div>` : ""}
-    ${on && miss.length ? `<div class="note warn"><span>Not written in ${esc(miss.map(([l, n]) => `${LANG[l] || l} (${plural(n, "lead")})`).join(", "))}: they get no follow-up until you add it.</span></div>` : ""}
-    ${on ? `<p class="small muted" style="margin:0">Goes out on its own, Monday to Friday 9:00–18:00, a few minutes apart, as a reply to the first email. If the app was off on the day, it goes out once the app is back on.</p>` : ""}</section>`;
+    ${row(1)}${row(2)}
+    <p class="small muted" style="margin:0">Follow-ups go out on their own, Monday to Friday 9:00–18:00, a few minutes apart, as replies in the first email's conversation. A reply stops them. If the app was off on the day, they go out once it's back on.</p></section>`;
 }
 
 /** A started campaign's email in other languages: its text is fixed, but languages can be
@@ -993,33 +1008,32 @@ function editTranslations(c, versionId) {
   };
 }
 
-function editFollowup(c) {
-  const x = { versions: c.versions, followup: structuredClone(fuOf(c)), followup_default: c.followup_default };
-  let on = c.followups_on || !c.followup, days = c.followup_days || 7, lang = null;
-  const sheet = openModal(`<div class="sheet-h"><h2>Automation: follow-up</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
-    <form class="sheet-b"><label class="check"><input type="checkbox" class="chk" name="on" ${on ? "checked" : ""}> Send one follow-up on its own if they don't reply</label>
-      <label class="fu-days small muted"><span>after</span><input class="input sm" type="number" name="days" min="1" max="30" value="${days}"><span>days after the first email</span></label>
-      <div data-fu-here>${fuEditor(x, lang)}</div>
-      <p class="small muted" style="margin:0">A change applies to the follow-ups not sent yet.</p>
+function editFollowup(c, k) {
+  const x = { versions: c.versions, [FU[k].text]: structuredClone(fuOf(c, k)), [FU[k].def]: c[FU[k].def] };
+  let on = c[FU[k].on] !== false || !c[FU[k].text], days = fuDays(c, k), lang = null;
+  const blocked = k === 2 && c.followups_on === false;
+  const sheet = openModal(`<div class="sheet-h"><h2>Automation: follow-up ${k}</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+    <form class="sheet-b"><label class="check"><input type="checkbox" class="chk" name="on" ${on ? "checked" : ""}> ${k === 1 ? "Send follow-up 1 on its own if they don't reply" : "Send follow-up 2, the last one, if they still don't reply"}</label>
+      ${blocked ? `<div class="note warn"><span>Follow-up 1 is off, so follow-up 2 can't go out: it's sent ${plural(days, "day")} after follow-up 1.</span></div>` : ""}
+      <label class="fu-days small muted"><span>after</span><input class="input sm" type="number" name="days" min="1" max="30" value="${days}"><span>days after ${FU[k].after}</span></label>
+      <div data-fu-here>${fuEditor(x, k, lang)}</div>
+      <p class="small muted" style="margin:0">A change applies to every follow-up ${k} not sent yet, including those already waiting for a free slot.</p>
       <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`);
-  sheet.oninput = (e) => {
-    const t = e.target;
-    if (t.dataset.fubody) setFuText(x, t.dataset.fubody, t.value);
-  };
+  sheet.oninput = (e) => { if (e.target.dataset.fubody) setFuText(x, k, e.target.dataset.fubody, e.target.value); };
   sheet.onclick = (e) => {
     const b = e.target.closest("button");
     if (e.target.closest("[data-close]")) return closeModal();
-    if (b?.dataset.fulang) { lang = b.dataset.fulang; $("[data-fu-here]", sheet).innerHTML = fuEditor(x, lang); }
+    if (b?.dataset.fulang) { lang = b.dataset.fulang; $("[data-fu-here]", sheet).innerHTML = fuEditor(x, k, lang); }
   };
   sheet.onsubmit = async (e) => {
     e.preventDefault();
-    const f = e.target;
-    on = f.on.checked; days = Math.max(1, Math.min(30, +f.days.value || 7));
-    if (on && !x.followup.body.trim()) { toast("Write the follow-up first.", { err: true }); return; }
+    const f = e.target, text = x[FU[k].text];
+    on = f.on.checked; days = Math.max(1, Math.min(30, +f.days.value || FU[k].d));
+    if (on && !text.body.trim()) { toast(`Write follow-up ${k} first.`, { err: true }); return; }
     await busy(f.querySelector(".primary"), async () => {
-      await api(`/api/campaigns/${c.id}`, { method: "PUT", body: { followups_on: on, followup_days: days, ...(x.followup.body.trim() ? { followup: x.followup } : {}) } });
+      await api(`/api/campaigns/${c.id}`, { method: "PUT", body: { [FU[k].on]: on, [FU[k].days]: days, ...(text.body.trim() ? { [FU[k].text]: text } : {}) } });
       closeModal();
-      toast(on ? `Saved. The follow-up goes out ${plural(days, "day")} after each first email that got no reply.` : "Follow-up automation off.");
+      toast(on ? `Saved. Follow-up ${k} goes out ${plural(days, "day")} after ${FU[k].after} to those who haven't replied.` : `Follow-up ${k} off.`);
       changed();
     });
   };

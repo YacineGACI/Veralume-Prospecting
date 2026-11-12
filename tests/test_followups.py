@@ -175,3 +175,101 @@ def test_a_campaign_starts_only_with_its_automations_set(db):
     assert r.status_code == 409 and "automations" in r.json()["detail"]
     client.put(f"/api/campaigns/{c['id']}", json={"followups_on": False})  # turned off: fine
     assert client.post(f"/api/campaigns/{c['id']}/start").status_code == 200
+
+
+# --- follow-up 2, and changes to follow-ups already written ----------------------------
+
+
+def _send_all(db, cid, step, days_ago=None):
+    """Send every written follow-up of this step (dry-run), dated `days_ago` days back."""
+    with db() as s:
+        for m in _followups_step(s, cid, step):
+            if m.status == "approved":
+                mailer.send(s, m)
+                if days_ago is not None:
+                    m.sent_at = mailer.iso(mailer.local() - timedelta(days=days_ago))
+        s.commit()
+
+
+def _followups_step(s, cid, step):
+    return list(s.scalars(select(Message).where(Message.campaign_id == cid, Message.step == step)))
+
+
+def test_a_new_campaign_has_a_second_followup_after_10_days(db):
+    c = draft()
+    assert c["followup2_on"] is True and c["followup2_days"] == 10
+    assert "Dernier message" in c["followup2"]["body"] and len(c["followup2"]["translations"]) == 12
+
+
+def test_followup_2_goes_after_followup_1_to_those_still_silent(db):
+    cid, fr, de = _sent(db, n_de=1)
+    with db() as s:
+        assert C.write_due_followups(s) == 4  # follow-up 1 for all
+        s.commit()
+    _send_all(db, cid, 1, days_ago=3)
+    with db() as s:
+        assert C.write_due_followups(s) == 0  # follow-up 2 waits 10 days after follow-up 1
+        s.add(Message(lead_id=fr[0], direction="in", status="received", subject="Re", body="Oui",
+                      sent_at=mailer.iso(mailer.local())))  # fmt: skip
+        s.commit()
+    st = client.get(f"/api/campaigns/{cid}").json()["followup2_status"]
+    assert st["later"] == 3 and st["replied"] == 1
+    client.put(f"/api/campaigns/{cid}", json={"followup2_days": 2})
+    with db() as s:
+        assert C.write_due_followups(s) == 3  # not to the one who replied
+        s.commit()
+        fu1 = {m.lead_id: m for m in _followups_step(s, cid, 1)}
+        fu2 = {m.lead_id: m for m in _followups_step(s, cid, 2)}
+        assert set(fu2) == {fr[1], fr[2], de[0]}
+        for lid, m in fu2.items():
+            assert m.in_reply_to == fu1[lid].message_id and m.subject == fu1[lid].subject  # one "Re:"
+            assert m.language == fu1[lid].language and not m.asset_ids
+        assert "letzte Nachricht" in fu2[de[0]].body and "Dernier message" in fu2[fr[1]].body
+    _send_all(db, cid, 2)
+    states = {l["id"]: l["state"] for l in client.get(f"/api/campaigns/{cid}").json()["results"]["leads"]}
+    assert states[fr[1]] == "followed_up_2" and states[fr[0]] == "replied"
+
+
+def test_followup_2_off_or_followup_1_off(db):
+    cid, fr, de = _sent(db, n_de=0, days_ago=20)  # first emails 20 days ago, follow-up 1 11
+    with db() as s:
+        C.write_due_followups(s)
+        s.commit()
+    _send_all(db, cid, 1, days_ago=11)
+    client.put(f"/api/campaigns/{cid}", json={"followup2_on": False})
+    with db() as s:
+        assert C.write_due_followups(s) == 0
+    client.put(f"/api/campaigns/{cid}", json={"followup2_on": True, "followups_on": False})
+    with db() as s:
+        assert C.write_due_followups(s) == 0  # follow-up 2 hangs on follow-up 1
+    client.put(f"/api/campaigns/{cid}", json={"followups_on": True})
+    with db() as s:
+        assert C.write_due_followups(s) == 3
+
+
+def test_switching_off_or_editing_rewrites_the_followups_not_sent_yet(db):
+    cid, fr, de = _sent(db, n_de=0)
+    with db() as s:
+        assert C.write_due_followups(s) == 3  # written, waiting for a free slot
+        s.commit()
+    client.put(f"/api/campaigns/{cid}", json={"followups_on": False})
+    with db() as s:
+        assert _followups_step(s, cid, 1) == []  # none goes out
+    client.put(f"/api/campaigns/{cid}", json={"followups_on": True})
+    with db() as s:
+        assert C.write_due_followups(s) == 3
+        s.commit()
+    client.put(f"/api/campaigns/{cid}", json={"followup": {"language": "fr", "body": "Nouveau texte, {prenom}"}})
+    with db() as s:
+        assert _followups_step(s, cid, 1) == []
+        assert C.write_due_followups(s) == 3
+        s.commit()
+        assert all(m.body.startswith("Nouveau texte") for m in _followups_step(s, cid, 1))
+    # Saving the same text again changes nothing.
+    client.put(f"/api/campaigns/{cid}", json={"followup": {"language": "fr", "body": "Nouveau texte, {prenom}"}})
+    with db() as s:
+        assert len(_followups_step(s, cid, 1)) == 3
+    # A longer delay: not due any more, so nothing waits.
+    client.put(f"/api/campaigns/{cid}", json={"followup_days": 20})
+    with db() as s:
+        assert _followups_step(s, cid, 1) == [] and C.write_due_followups(s) == 0

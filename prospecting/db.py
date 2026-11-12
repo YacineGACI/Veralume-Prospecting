@@ -290,6 +290,10 @@ class Campaign(Base):
     # One follow-up, sent on its own this many days after the first email if they haven't
     # replied (its text: the campaign's template with step 1). Empty means 7.
     followup_days: Mapped[int | None] = mapped_column(Integer, default=7)
+    # A second, last follow-up this many days after the first one, to those who still
+    # haven't replied (its text: the template with step 2). Empty means on, after 10 days.
+    followup2_on: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    followup2_days: Mapped[int | None] = mapped_column(Integer, default=10)
     started_at: Mapped[str | None] = mapped_column(String(32))
     ended_at: Mapped[str | None] = mapped_column(String(32))
     experiment_id: Mapped[int | None] = mapped_column(Integer)
