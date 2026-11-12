@@ -80,8 +80,20 @@ def _ids(value: Any) -> list[str]:
 
 
 def _all_text(em: EmailMessage) -> str:
+    """Every readable line of a bounce: its text parts, the lines of its delivery report
+    ("Final-Recipient: rfc822; x@y") and the headers of the email it returns (its
+    Message-ID), which the parser keeps as headers, not as text."""
     out = []
     for part in em.walk():
+        ctype = part.get_content_type()
+        if ctype == "message/delivery-status":
+            for block in part.get_payload() or []:
+                out.extend(f"{k}: {v}" for k, v in block.items())
+            continue
+        if ctype == "message/rfc822":
+            for inner in part.get_payload() or []:
+                out.extend(f"{k}: {v}" for k, v in inner.items() if k.lower() in ("message-id", "to"))
+            continue
         if part.is_multipart():
             continue
         payload = part.get_payload(decode=True)
@@ -94,11 +106,16 @@ def _bounce(s: Session, em: EmailMessage) -> str | None:
     text = _all_text(em)
     refs = _ids(em["In-Reply-To"]) + _ids(em["References"]) + _ids(text)
     failed = [a.lower() for a in _ADDR.findall(str(em["X-Failed-Recipients"] or ""))]
-    failed += [a.lower() for a in re.findall(r"Final-Recipient:\s*rfc822;\s*<?([^\s>]+)", text, re.I)]
+    failed += [a.lower() for a in re.findall(r"(?:Final|Original)-Recipient:\s*rfc822;\s*<?([^\s>;]+)", text, re.I)]
     q = select(Message).where(Message.direction == "out", Message.status == "sent")
     ours = list(s.scalars(q.where(Message.message_id.in_(refs)))) if refs else []
     if not ours and failed:
         ours = list(s.scalars(q.where(Message.to_addr.in_(failed))))
+    if not ours:  # a plain-text bounce: an address we wrote to in the last month, named in it
+        since = iso(local() - timedelta(days=30))
+        named = {a.lower() for a in _ADDR.findall(text)} - {str(settings.sender or "").lower()}
+        if named:
+            ours = list(s.scalars(q.where(Message.to_addr.in_(named), Message.sent_at >= since)))
     for m in ours:
         lead = s.get(Lead, m.lead_id)
         m.status, m.error = "failed", "bounced"

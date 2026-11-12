@@ -447,6 +447,12 @@ def email_for(s: Session, c: Campaign, lead_id: int) -> Message:
         raise CampaignError("Already sent to this lead.")
     if m is not None:
         if m.status == "failed":
+            if m.error == "bounced":  # that address doesn't exist: another of theirs, or none
+                other = next(iter(usable_emails(lead, shared_contacts()[0])), None)
+                if other is None:
+                    raise CampaignError(f"{lead.name}'s address bounced and they have no other. "
+                                        "Find their own address on their site and add it in their file.")  # fmt: skip
+                m.to_addr = other
             m.status, m.error = "queued", None  # try again
         return m
     why = _why_unwritable(s, row, lead, shared_contacts()[0])
@@ -539,6 +545,7 @@ def _letter(i: int) -> str:
 
 def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
     tpls = versions(s, c)
+    se = shared_contacts()[0]
     letters = {t.id: _letter(i) for i, t in enumerate(tpls)}
     rows = list(s.scalars(
         select(CampaignLead).where(CampaignLead.campaign_id == c.id).order_by(CampaignLead.rank)
@@ -572,6 +579,9 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
         if m.status in ("queued", "approved"):
             return ("to_review" if m.status == "queued" else "approved"), m.due_at
         if m.status == "failed":
+            if m.error == "bounced":  # sendable again only to another address of theirs
+                other = lead is not None and bool(usable_emails(lead, se))
+                return ("bounced_retry" if other else "bounced"), m.sent_at or m.due_at
             return "failed", m.due_at
         o = outcome.get(row.lead_id, {})
         if o.get("stopped"):
@@ -596,6 +606,7 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
         "replied": replied, "interested": count["interested"], "stopped": count["stopped"],
         "skipped": count["skipped"], "failed": count["failed"], "no_reply": count["no_reply"],
         "pilots": sum(1 for l in leads.values() if l.pilot_stage),
+        "bounced": count["bounced"] + count["bounced_retry"],
     }  # fmt: skip
 
     # Versions: the campaign's A/B test, or the one email's own numbers.

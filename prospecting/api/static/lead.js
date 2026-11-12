@@ -129,7 +129,8 @@ function conversation(l, f) {
     }
     if (m.status === "queued") return `<div class="msg sched"><span>${small(I.clock)} <b>${esc(label)}</b> written, waiting for your review · ${new Date(m.due_at) > new Date() ? `due ${esc(at(m.due_at))}` : "due now"}</span><button class="btn sm" data-review="${m.id}">Review</button></div>`;
     if (m.status === "approved") return `<div class="msg sched"><span>${small(I.send)} <b>${esc(label)}</b> ${m.step >= 1 && m.campaign_id ? "due: goes out on its own at the next free slot (Monday to Friday, 9:00–18:00)" : "approved, goes out at the next free slot"}</span></div>`;
-    return `<div class="msg sched bad"><span>${small(I.x)} <b>${esc(label)} not sent</b> · ${esc(m.error || "")}</span>${m.error !== "bounced" ? `<button class="btn sm" data-review="${m.id}">Retry</button>` : ""}</div>`;
+    if (m.error === "bounced") return `<div class="msg sched bad"><span>${small(I.x)} <b>${esc(label)} bounced</b>: ${esc(m.to || "the address")} doesn't exist. Find their own address on their site and add it under Contact.</span></div>`;
+    return `<div class="msg sched bad"><span>${small(I.x)} <b>${esc(label)} not sent</b> · ${esc(m.error || "")}</span><button class="btn sm" data-review="${m.id}">Retry</button></div>`;
   };
   return `<div class="conv">${plan}${msgs.length ? msgs.map(card).join("") : `<p class="muted small">No email yet with ${esc(who(l))}.</p>`}
     <div class="conv-act">${unsent ? `<button class="btn primary" data-send-back>${small(I.send, 15)} Send ${unsent} retouched photo${unsent > 1 ? "s" : ""} back</button>` : ""}

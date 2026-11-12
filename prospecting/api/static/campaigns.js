@@ -811,11 +811,12 @@ function wire() {
 
 const STATE = {
   not_sent: ["Not sent yet", ""], to_review: ["Written, not sent", "todo"], approved: ["Approved, going out", ""],
-  waiting: ["Sent, no reply yet", ""], followed_up: ["Followed up, no reply yet", ""], followed_up_2: ["Followed up twice, no reply", ""], no_reply: ["No reply: done", ""], replied: ["Replied", "ok"], interested: ["Interested", "ok"],
+  waiting: ["Sent, no reply yet", ""], followed_up: ["Followed up, no reply yet", ""], followed_up_2: ["Followed up twice, no reply", ""], no_reply: ["No reply: done", ""],
+  bounced: ["Address bounced: find another", "bad"], bounced_retry: ["Bounced: send to their other address", "bad"], replied: ["Replied", "ok"], interested: ["Interested", "ok"],
   stopped: ["Asked to stop", "bad"], failed: ["Not sent (error)", "bad"], skipped: ["Skipped (contacted another way)", ""],
 };
 let leadFilter = "to_send";
-const TO_SEND = ["not_sent", "to_review", "approved", "failed"];
+const TO_SEND = ["not_sent", "to_review", "approved", "failed", "bounced_retry"];
 
 /** Open this lead's email to read and send; "Send and next" goes on with the leads after it. */
 async function sendFrom(c, ids, i) {
@@ -859,7 +860,7 @@ function renderResults(c) {
     ${c.status === "paused" ? `<div class="note warn" style="margin-bottom:12px">Paused: no new emails are written. Approved first emails went back to review.</div>` : ""}
     ${c.start_on && c.start_on > new Date().toISOString().slice(0, 10) ? `<div class="note info" style="margin-bottom:12px">Starts on ${esc(c.start_on)}: the first emails are written that morning.</div>` : ""}
     <div class="cp-bar big" role="img" aria-label="${t.replied} replied, ${t.sent - t.replied} waiting, ${t.to_review + t.approved} written, ${t.not_sent} not written yet"><span style="flex:${t.replied};background:var(--warn)"></span><span style="flex:${t.sent - t.replied};background:var(--emerald)"></span><span style="flex:${t.to_review + t.approved};background:var(--mint)"></span><span style="flex:${t.not_sent}"></span></div>
-    <div class="cr-kpi"><div><b>${t.sent}</b><span>emailed, of ${t.leads}</span></div><div><b>${t.replied}${t.sent ? ` <small>${pct(t.replied / t.sent)}</small>` : ""}</b><span>replied</span></div><div><b>${t.interested}</b><span>interested</span></div><div><b>${t.pilots}</b><span>free tests</span></div><div><b>${t.stopped}</b><span>asked to stop</span></div>
+    <div class="cr-kpi"><div><b>${t.sent}</b><span>emailed, of ${t.leads}</span></div><div><b>${t.replied}${t.sent ? ` <small>${pct(t.replied / t.sent)}</small>` : ""}</b><span>replied</span></div><div><b>${t.interested}</b><span>interested</span></div><div><b>${t.pilots}</b><span>free tests</span></div><div><b>${t.stopped}</b><span>asked to stop</span></div>${t.bounced ? `<div title="The address doesn't exist: the lead is flagged; find their own address on their site"><b>${t.bounced}</b><span>bounced</span></div>` : ""}
       ${t.to_review ? `<a href="#today" class="todo"><b>${t.to_review}</b><span>to review in Today →</span></a>` : ""}</div>
     ${r.versions.length > 1 ? `<section class="card cr-test"><div class="row"><h2>A/B test: which email works better?</h2><span class="small muted">counted on ${test?.metric === "interested" ? "interested leads" : "replies"} · ${Math.round(100 / r.versions.length)} % of leads each</span></div>
         ${test?.suggest ? `<div class="cr-verdict win"><span><b>Version ${esc(test.suggest.letter)} is clearly better.</b> ${esc(test.verdict.text)} ${plural(test.suggest.unsent, "lead")} haven't had their email yet.</span><button class="btn primary" data-winner="${test.suggest.template_id}" data-letter="${esc(test.suggest.letter)}" data-unsent="${test.suggest.unsent}">Send ${esc(test.suggest.letter)} to the ${test.suggest.unsent} left</button><button class="btn" data-keep-testing>Keep testing</button></div>`
