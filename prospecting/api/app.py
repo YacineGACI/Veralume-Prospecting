@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sqlalchemy import func, or_, select
 
-from prospecting import enrich, mailer, pilot, scoring, screen, worker
+from prospecting import campaigns, enrich, mailer, pilot, scoring, screen, worker
 from prospecting.api.campaigns import router as campaigns_router
 from prospecting.api.experiments import router as experiments_router
 from prospecting.api.labels import router as labels_router
@@ -99,9 +99,12 @@ def detail(s, lead: Lead) -> dict[str, Any]:
              "body": m.body, "to": m.to_addr, "from": m.from_addr, "step": m.step,
              "due_at": m.due_at, "sent_at": m.sent_at, "error": m.error,
              "attach_photo_id": m.attach_photo_id, "asset_ids": m.asset_ids or [],
-             "file_ids": m.file_ids or [], "links": m.links or []}
+             "file_ids": m.file_ids or [], "links": m.links or [], "language": m.language,
+             "campaign_id": m.campaign_id}
             for m in msgs
         ],
+        # Follow-ups a campaign will send on their own later (written only on the day).
+        "followup_plan": campaigns.followup_plan(s, lead.id),
     }  # fmt: skip
 
 

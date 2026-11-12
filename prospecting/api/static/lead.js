@@ -107,11 +107,14 @@ function attThumbs(m, f) {
 }
 
 function conversation(l, f) {
-  const msgs = l.messages.filter((m) => m.status !== "cancelled").slice().reverse();
+  // Newest first. A campaign's cancelled follow-up stays, to say why it didn't go.
+  const msgs = l.messages.filter((m) => m.status !== "cancelled" || (m.step === 1 && m.campaign_id)).slice().reverse();
   const unsent = f.files.filter((x) => x.kind === "retouched" && !x.sent_at).length;
   const replied = l.messages.some((m) => m.direction === "in");
+  const plan = (l.followup_plan || []).map((p) => `<div class="msg sched"><span>${small(I.clock)} <b>Follow-up</b> goes out on its own on ${esc(new Date(p.due_at).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }))}, if ${esc(first(l))} hasn't replied · ${esc(p.campaign)}</span></div>`).join("");
   const card = (m) => {
-    const label = STEP[m.step] || "Email";
+    const label = m.step === 1 && m.campaign_id ? "Follow-up" : STEP[m.step] || "Email";
+    if (m.status === "cancelled") return `<div class="msg sched"><span>${small(I.x)} <b>${esc(label)} not sent</b>: ${esc(m.error || "cancelled")}</span></div>`;
     if (m.direction === "in") {
       const a = attThumbs(m, f);
       return `<article class="msg in"><div class="mh"><b>${esc(who(l))}</b><span>replied</span><span class="grow"></span><span>${esc(at(m.sent_at))}</span></div>
@@ -125,10 +128,10 @@ function conversation(l, f) {
         <div class="ms">${esc(m.subject)}</div><details class="mb-fold"><summary>${esc(m.body.replace(/\s+/g, " ").slice(0, 160))}…</summary><div class="mb">${esc(m.body)}</div></details>${a.html}</article>`;
     }
     if (m.status === "queued") return `<div class="msg sched"><span>${small(I.clock)} <b>${esc(label)}</b> written, waiting for your review · ${new Date(m.due_at) > new Date() ? `due ${esc(at(m.due_at))}` : "due now"}</span><button class="btn sm" data-review="${m.id}">Review</button></div>`;
-    if (m.status === "approved") return `<div class="msg sched"><span>${small(I.send)} <b>${esc(label)}</b> approved, goes out at the next free slot</span></div>`;
+    if (m.status === "approved") return `<div class="msg sched"><span>${small(I.send)} <b>${esc(label)}</b> ${m.step === 1 && m.campaign_id ? "due: goes out on its own at the next free slot (Monday to Friday, 9:00–18:00)" : "approved, goes out at the next free slot"}</span></div>`;
     return `<div class="msg sched bad"><span>${small(I.x)} <b>${esc(label)} not sent</b> · ${esc(m.error || "")}</span>${m.error !== "bounced" ? `<button class="btn sm" data-review="${m.id}">Retry</button>` : ""}</div>`;
   };
-  return `<div class="conv">${msgs.length ? msgs.map(card).join("") : `<p class="muted small">No email yet with ${esc(who(l))}.</p>`}
+  return `<div class="conv">${plan}${msgs.length ? msgs.map(card).join("") : `<p class="muted small">No email yet with ${esc(who(l))}.</p>`}
     <div class="conv-act">${unsent ? `<button class="btn primary" data-send-back>${small(I.send, 15)} Send ${unsent} retouched photo${unsent > 1 ? "s" : ""} back</button>` : ""}
       <button class="btn ${unsent ? "" : "primary"}" data-email ${l.do_not_contact ? "disabled" : ""}>${I.mail} ${replied ? `Reply to ${esc(first(l))}` : `Email ${esc(first(l))}`} <kbd>e</kbd></button></div></div>`;
 }

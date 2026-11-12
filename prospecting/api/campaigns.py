@@ -47,9 +47,20 @@ def _config(s, c: Campaign) -> dict[str, Any]:
         "excluded": c.excluded or [], "included": c.included or [], "daily_cap": c.daily_cap or 20,
         "review": c.review or "daily", "metric": c.metric or "reply",
         "start_on": c.start_on, "followups_on": c.followups_on is not False,
+        "followup_days": C.days_of(c), "followup": _followup(C.followup_of(s, c)),
+        "followup_default": C.FOLLOWUP_BODY,
         "started_at": c.started_at, "ended_at": c.ended_at, "created_at": c.created_at,
         "versions": [_version(t, i) for i, t in enumerate(C.versions(s, c))],
     }  # fmt: skip
+
+
+def _followup(t: Template | None) -> dict[str, Any] | None:
+    """The follow-up text: {language, body, translations: {lang: body}} (its subject is
+    always "Re: " + the first email's)."""
+    if t is None:
+        return None
+    return {"language": t.language or "fr", "body": t.body,
+            "translations": {k: x.get("body", "") for k, x in (t.translations or {}).items()}}  # fmt: skip
 
 
 def _card(s, c: Campaign) -> dict[str, Any]:
@@ -188,6 +199,12 @@ class VersionIn(BaseModel):
     translations: dict[str, dict[str, str]] = {}
 
 
+class FollowupIn(BaseModel):
+    language: str = "fr"  # of body
+    body: str = ""
+    translations: dict[str, str] = {}  # lang → text
+
+
 class CampaignIn(BaseModel):
     name: str | None = None
     kind: str | None = None
@@ -201,6 +218,8 @@ class CampaignIn(BaseModel):
     metric: str | None = None
     start_on: str | None = None
     followups_on: bool | None = None
+    followup_days: int | None = None
+    followup: FollowupIn | None = None  # can change on a started campaign
     versions: list[VersionIn] | None = None
 
 
@@ -216,6 +235,17 @@ def _apply(s, c: Campaign, b: CampaignIn) -> None:
         c.review = b.review
     if b.followups_on is not None:
         c.followups_on = b.followups_on
+    if b.followup_days is not None:
+        if not 1 <= b.followup_days <= 30:
+            raise HTTPException(422, "The follow-up goes out 1 to 30 days after the first email.")
+        c.followup_days = b.followup_days
+    if b.followup is not None:
+        if b.followup.language not in LANGUAGES:
+            raise HTTPException(422, "Unknown language")
+        if not b.followup.body.strip():
+            raise HTTPException(422, "Write the follow-up text first.")
+        C.set_followup(s, c, b.followup.language, b.followup.body,
+                       {k: {"subject": "Re:", "body": v} for k, v in b.followup.translations.items()})  # fmt: skip
     if b.start_on is not None:
         try:
             c.start_on = date.fromisoformat(b.start_on).isoformat() if b.start_on else None
@@ -290,6 +320,9 @@ def create(b: CampaignIn) -> dict[str, Any]:
             ).first()  # fmt: skip
             C.new_version(s, c, "A", t.subject if t else "", t.body if t else "Bonjour {prenom},\n\n\n\n{signature}",
                           list(t.asset_ids or []) if t else [], bool(t and t.attach_photo))  # fmt: skip
+        if b.followup is None:  # a follow-up ready to edit, in French
+            C.set_followup(s, c, "fr", C.FOLLOWUP_BODY, None)
+        c.followup_days = c.followup_days or C.FOLLOWUP_DAYS
         s.commit()
         return _config(s, c)
 
@@ -301,6 +334,7 @@ def get_one(campaign_id: int) -> dict[str, Any]:
         out = _config(s, c)
         if c.status != "draft":
             out["results"] = C.results(s, c)
+            out["followup_status"] = C.followup_status(s, c)
         out["mailbox"] = mailbox_status(s)
         return out
 
@@ -320,8 +354,9 @@ def delete(campaign_id: int) -> dict[str, Any]:
         c = _get(s, campaign_id)
         if c.status != "draft":
             raise HTTPException(409, "Only a draft can be deleted. Pause a started campaign instead.")
-        for t in C.versions(s, c):
-            t.archived = True
+        for t in [*C.versions(s, c), C.followup_of(s, c)]:
+            if t is not None:
+                t.archived = True
         s.delete(c)
         s.commit()
         return {"deleted": campaign_id}
@@ -333,12 +368,16 @@ def duplicate(campaign_id: int) -> dict[str, Any]:
         c = _get(s, campaign_id)
         d = Campaign(name=f"{c.name} (copy)", kind=c.kind, filters=dict(c.filters or {}),
                      size=c.size, lead_order=c.lead_order, excluded=[], daily_cap=c.daily_cap,
-                     review=c.review, metric=c.metric, followups_on=c.followups_on, status="draft")  # fmt: skip
+                     review=c.review, metric=c.metric, followups_on=c.followups_on, status="draft",
+                     followup_days=C.days_of(c))  # fmt: skip
         s.add(d)
         s.flush()
         for t in C.versions(s, c):
             C.new_version(s, d, t.name, t.subject, t.body, list(t.asset_ids or []), t.attach_photo,
                           t.language or "fr", dict(t.translations or {}))  # fmt: skip
+        fu = C.followup_of(s, c)
+        if fu is not None:
+            C.set_followup(s, d, fu.language or "fr", fu.body, dict(fu.translations or {}))
         s.commit()
         return _config(s, d)
 

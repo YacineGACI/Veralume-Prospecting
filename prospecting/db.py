@@ -287,6 +287,9 @@ class Campaign(Base):
     metric: Mapped[str | None] = mapped_column(String(12))  # reply | interested
     start_on: Mapped[str | None] = mapped_column(String(10))  # YYYY-MM-DD
     followups_on: Mapped[bool | None] = mapped_column(Boolean, default=True)
+    # One follow-up, sent on its own this many days after the first email if they haven't
+    # replied (its text: the campaign's template with step 1). Empty means 7.
+    followup_days: Mapped[int | None] = mapped_column(Integer, default=7)
     started_at: Mapped[str | None] = mapped_column(String(32))
     ended_at: Mapped[str | None] = mapped_column(String(32))
     experiment_id: Mapped[int | None] = mapped_column(Integer)
