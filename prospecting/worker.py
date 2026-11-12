@@ -24,6 +24,8 @@ def tick(poll_inbox: bool) -> None:
         s.commit()
         campaigns.close_silent(s)  # "No reply" for those who never answered
         s.commit()
+        campaigns.pause_on_bounces(s)  # too many dead addresses: stop before Gmail minds
+        s.commit()
         msg = mailer.send_due(s)
         s.commit()
         if msg is not None:

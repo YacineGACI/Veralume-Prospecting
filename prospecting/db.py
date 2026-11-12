@@ -301,6 +301,16 @@ class Campaign(Base):
     started_at: Mapped[str | None] = mapped_column(String(32))
     ended_at: Mapped[str | None] = mapped_column(String(32))
     experiment_id: Mapped[int | None] = mapped_column(Integer)
+    # When its emails may go out: weekdays (Monday = 0) and [start hour, end hour), Paris
+    # time. Empty: the app's (Mon–Fri, 9–18).
+    send_days: Mapped[list[int] | None] = mapped_column(JSON)
+    send_hours: Mapped[list[int] | None] = mapped_column(JSON)
+    notes: Mapped[str | None] = mapped_column(Text)
+    # Pause it on its own when this % of its first emails bounce (empty: never). bounce_ack:
+    # the bounces already seen when it was resumed, so only a new one pauses it again.
+    bounce_pause: Mapped[int | None] = mapped_column(Integer)
+    bounce_ack: Mapped[int | None] = mapped_column(Integer)
+    paused_reason: Mapped[str | None] = mapped_column(String(300))
 
 
 class CampaignLead(Base):
@@ -314,6 +324,7 @@ class CampaignLead(Base):
     template_id: Mapped[int | None] = mapped_column(Integer)
     rank: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[str] = mapped_column(String(32), default=now)
+    no_followups: Mapped[bool | None] = mapped_column(Boolean, default=False)  # skipped by hand
 
 
 LABEL_COLORS = ("gold", "violet", "teal", "blue", "red", "green", "pink", "grey")

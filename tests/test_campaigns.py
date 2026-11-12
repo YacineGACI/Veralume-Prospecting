@@ -24,7 +24,7 @@ FIRST = ["Claire", "Lucas", "Inès", "Marc", "Julie", "Hugo", "Léa", "Paul"]
 def outside_sending_hours(monkeypatch):
     """Starting a campaign inside sending hours writes today's batch at once; the tests
     write it themselves."""
-    monkeypatch.setattr(mailer, "in_window", lambda dt=None: False)
+    monkeypatch.setattr(mailer, "in_window", lambda dt=None, c=None: False)
 
 
 def leads(db, n=6, **kw) -> list[int]:
@@ -188,7 +188,7 @@ def test_grow_duplicate_delete(db):
     assert client.get(f"/api/campaigns/{c['id']}").json()["size"] == 4
     d = client.post(f"/api/campaigns/{c['id']}/duplicate").json()
     assert d["status"] == "draft" and d["name"].endswith("(copy)") and len(d["versions"]) == 2
-    assert client.delete(f"/api/campaigns/{c['id']}").status_code == 409
+    assert client.delete(f"/api/campaigns/{c['id']}").status_code == 200  # started: its unsent emails go too
     assert client.delete(f"/api/campaigns/{d['id']}").status_code == 200
 
 

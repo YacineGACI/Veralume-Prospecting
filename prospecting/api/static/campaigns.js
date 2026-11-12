@@ -6,40 +6,41 @@ import {
 } from "./core.js";
 import { openLead, openReview } from "./lead.js";
 import { campaigns as templatesUI } from "./views.js";
+import { renderCampaign } from "./campaign_page.js";
 
 const C = () => $("#canvas");
 const SEGS = ["photographer", "agency", "independent_agent"];
-const LET = ["A", "B", "C", "D"];
-const VCOL = ["var(--emerald)", "var(--blue)", "var(--violet)", "var(--warn)"];
-const pct = (v) => (v == null ? "–" : `${Math.round(v * 100)} %`);
-const plural = (n, one, many = one + "s") => `${n.toLocaleString("en")} ${n === 1 ? one : many}`;
-const STATUS = { draft: ["Draft", "st-new"], running: ["Running", "st-pilot"], paused: ["Paused", "st-contacted"], done: ["Finished", "st-customer"] };
-const statusPill = (s) => `<span class="pill ${STATUS[s]?.[1] || ""}">${STATUS[s]?.[0] || esc(s)}</span>`;
+export const LET = ["A", "B", "C", "D"];
+export const VCOL = ["var(--emerald)", "var(--blue)", "var(--violet)", "var(--warn)"];
+export const pct = (v) => (v == null ? "–" : `${Math.round(v * 100)} %`);
+export const plural = (n, one, many = one + "s") => `${n.toLocaleString("en")} ${n === 1 ? one : many}`;
+const STATUS = { draft: ["Draft", "st-new"], running: ["Running", "st-pilot"], paused: ["Paused", "st-contacted"], done: ["Finished", "st-customer"], archived: ["Archived", "st-lost"] };
+export const statusPill = (s) => `<span class="pill ${STATUS[s]?.[1] || ""}">${STATUS[s]?.[0] || esc(s)}</span>`;
 const workdays = (n, cap) => Math.max(1, Math.ceil(n / Math.max(cap, 1)));
 // Languages: a version's subject/body are in its main language; translations hold the
 // same email in others. A lead gets its own language, if every version is written in it.
-const mainLang = (v) => v.language || "fr";
-const vLangs = (v) => [mainLang(v), ...Object.keys(v.translations || {}).filter((x) => x !== mainLang(v))];
+export const mainLang = (v) => v.language || "fr";
+export const vLangs = (v) => [mainLang(v), ...Object.keys(v.translations || {}).filter((x) => x !== mainLang(v))];
 const textOf = (v, lang) => (lang === mainLang(v) ? v : v.translations?.[lang] || { subject: "", body: "" });
-const written = (v, lang) => lang === mainLang(v) || !!(textOf(v, lang).subject?.trim() && textOf(v, lang).body?.trim());
-const coveredLangs = (vs) => vs.reduce((acc, v) => { const mine = vLangs(v).filter((l) => written(v, l)); return acc ? acc.filter((x) => mine.includes(x)) : mine; }, null) || ["fr"];
-const langList = (ls) => ls.map((l) => LANG[l] || l).join(", ");
+export const written = (v, lang) => lang === mainLang(v) || !!(textOf(v, lang).subject?.trim() && textOf(v, lang).body?.trim());
+export const coveredLangs = (vs) => vs.reduce((acc, v) => { const mine = vLangs(v).filter((l) => written(v, l)); return acc ? acc.filter((x) => mine.includes(x)) : mine; }, null) || ["fr"];
+export const langList = (ls) => ls.map((l) => LANG[l] || l).join(", ");
 const usesLean = (vs) => vs.some((v) => `${v.subject} ${v.body}`.includes("{lean}"));
 
 // The follow-ups (automations): 1 after the first email, 2 (the last) after follow-up 1.
 // Each has one text per language ({language, body, translations: {lang: text}}); its
 // subject is always "Re: " + the first email's.
-const FU = {
+export const FU = {
   1: { on: "followups_on", days: "followup_days", text: "followup", def: "followup_default", status: "followup_status", d: 7, title: "Follow-up 1 if they don't reply", after: "the first email" },
   2: { on: "followup2_on", days: "followup2_days", text: "followup2", def: "followup2_default", status: "followup2_status", d: 10, title: "Follow-up 2, the last one, if they still don't reply", after: "follow-up 1" },
 };
-const fuOn = (c, k) => c.followups_on !== false && (k === 1 || c.followup2_on !== false);
-const fuDays = (c, k) => c[FU[k].days] || FU[k].d;
-const fuOf = (c, k) => c[FU[k].text] || structuredClone(c[FU[k].def] || { language: "fr", body: "", translations: {} });
-const fuText = (fu, l) => (l === (fu.language || "fr") ? fu.body : fu.translations?.[l] || "");
-const fuMissing = (c, k) => coveredLangs(c.versions).filter((l) => !fuText(fuOf(c, k), l).trim());
-const day = (iso) => new Date(iso).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
-const closeDays = (c) => c.close_days || 15;
+export const fuOn = (c, k) => c.followups_on !== false && (k === 1 || c.followup2_on !== false);
+export const fuDays = (c, k) => c[FU[k].days] || FU[k].d;
+export const fuOf = (c, k) => c[FU[k].text] || structuredClone(c[FU[k].def] || { language: "fr", body: "", translations: {} });
+export const fuText = (fu, l) => (l === (fu.language || "fr") ? fu.body : fu.translations?.[l] || "");
+export const fuMissing = (c, k) => coveredLangs(c.versions).filter((l) => !fuText(fuOf(c, k), l).trim());
+export const day = (iso) => new Date(iso).toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
+export const closeDays = (c) => c.close_days || 15;
 const closeTxt = (c) => (c.close_on !== false ? `“No reply” ${closeDays(c)} days after the last email` : "");
 const fuSummary0 = (c) => (!fuOn(c, 1) ? "none" : fuOn(c, 2) ? `follow-ups after ${fuDays(c, 1)} days, then ${fuDays(c, 2)} more` : `follow-up after ${plural(fuDays(c, 1), "day")}`);
 const fuSummary = (c) => [fuSummary0(c) === "none" ? "" : fuSummary0(c), closeTxt(c)].filter(Boolean).join(", then ") || "none";
@@ -54,7 +55,7 @@ function closeSection(c) {
     ${on ? `<label class="fu-days small muted"><span>after</span><input class="input sm" type="number" min="1" max="90" data-close-days value="${closeDays(c)}" aria-label="Days after the last email"><span>days after the last email (the last follow-up${fuOn(c, 1) ? "" : ", or the first email when follow-ups are off"})</span></label>` : ""}</div>`;
 }
 
-function setFuText(c, k, l, text) {
+export function setFuText(c, k, l, text) {
   const fu = (c[FU[k].text] = fuOf(c, k));
   if (l !== (fu.language || "fr") && !fu.body.trim()) { // nothing in the main language: this one becomes it
     const { [l]: _, ...rest } = fu.translations || {};
@@ -64,7 +65,7 @@ function setFuText(c, k, l, text) {
 }
 
 /** A follow-up's text, with a tab per language the first emails are written in. */
-function fuEditor(c, k, lang) {
+export function fuEditor(c, k, lang) {
   const fu = fuOf(c, k), langs = coveredLangs(c.versions);
   const l = langs.includes(lang) ? lang : langs[0];
   const miss = fuMissing(c, k);
@@ -110,7 +111,8 @@ export const campaignsView = {
       <div class="topline"><div><h1>Campaigns</h1><div class="sub">Choose who to write to, write one email or several versions to compare, and watch what works.</div></div><span class="grow"></span>
         <a class="btn" href="#dossiers">${small(I.copy)} Dossiers</a><button class="btn primary" data-new>${small(I.plus)} New campaign</button></div>
       ${!mb.configured ? `<div class="note warn" style="margin-bottom:14px">Your mailbox isn't connected, so campaigns can't send yet. <a href="#settings">Connect it</a></div>` : ""}
-      ${c.items.length ? `<div class="grid2">${c.items.map(card).join("")}</div>`
+      ${c.items.length ? `<div class="grid2">${c.items.filter((x) => x.status !== "archived").map(card).join("")}</div>
+        ${c.items.some((x) => x.status === "archived") ? `<details class="cp-arch"><summary class="small muted">Archived (${c.items.filter((x) => x.status === "archived").length})</summary><div class="grid2" style="margin-top:12px">${c.items.filter((x) => x.status === "archived").map(card).join("")}</div></details>` : ""}`
         : `<section class="card cp-empty"><h3>Your first campaign</h3><p class="muted">Three short steps: who you write to and how many, the email (or two versions to compare), and how many go out each day. The app writes each morning's emails; you approve them in Today.</p>
             <div class="row"><button class="btn primary" data-new data-kind="photographer">Start with real-estate photographers</button><button class="btn" data-new data-kind="agency">Agencies</button></div></section>`}
       <details class="card" style="margin-top:18px"><summary class="row" style="cursor:pointer"><h2 style="margin:0;font-size:16px">Reply, follow-up and other templates</h2><span class="small muted">used outside campaigns, and by every campaign's follow-ups</span></summary>
@@ -151,7 +153,7 @@ export const campaignView = {
       B.dossiers = (await api("/api/dossiers")).items;
       renderBuilder();
       refreshAudience(true);
-    } else renderResults(c);
+    } else renderCampaign(c);
   },
   leave() { flushSave(); },
 };
@@ -286,7 +288,7 @@ const TAGS = {};
 const tagName = (t) => (TAGS[t] || t.replace("_", " ")).toLowerCase();
 
 /** The active filters as removable chips: [label, key, value-for-lists]. */
-function activeFilters(f) {
+export function activeFilters(f) {
   const out = [];
   for (const k of Object.keys(NAMES)) if (f[k]) out.push([NAMES[k], k]);
   if (f.website === "yes" || f.website === true) out.push(["has a website", "website"]);
@@ -809,17 +811,16 @@ function wire() {
 
 // --- results (started) ----------------------------------------------------------------------
 
-const STATE = {
+export const STATE = {
   not_sent: ["Not sent yet", ""], to_review: ["Written, not sent", "todo"], approved: ["Approved, going out", ""],
   waiting: ["Sent, no reply yet", ""], followed_up: ["Followed up, no reply yet", ""], followed_up_2: ["Followed up twice, no reply", ""], no_reply: ["No reply: done", ""],
   bounced: ["Address bounced: find another", "bad"], bounced_retry: ["Bounced: send to their other address", "bad"], replied: ["Replied", "ok"], interested: ["Interested", "ok"],
   stopped: ["Asked to stop", "bad"], failed: ["Not sent (error)", "bad"], skipped: ["Skipped (contacted another way)", ""],
 };
-let leadFilter = "to_send";
-const TO_SEND = ["not_sent", "to_review", "approved", "failed", "bounced_retry"];
+export const TO_SEND = ["not_sent", "to_review", "approved", "failed", "bounced_retry"];
 
 /** Open this lead's email to read and send; "Send and next" goes on with the leads after it. */
-async function sendFrom(c, ids, i) {
+export async function sendFrom(c, ids, i) {
   if (i >= ids.length) { toast("That's everyone in this campaign for now."); return; }
   try {
     const item = await api(`/api/campaigns/${c.id}/leads/${ids[i]}/email`, { method: "POST" });
@@ -827,82 +828,7 @@ async function sendFrom(c, ids, i) {
   } catch (e) { fail(e); }
 }
 
-function renderResults(c) {
-  const r = c.results, t = r.totals, test = r.test;
-  const live = c.status === "running" || c.status === "paused";
-  const toSend = r.leads.filter((l) => TO_SEND.includes(l.state)).map((l) => l.id);
-  const counts = { to_send: toSend.length, waiting: t.sent - t.replied - t.stopped - (t.no_reply || 0), replied: t.replied + t.stopped, no_reply: t.no_reply || 0, all: t.leads };
-  if (!counts[leadFilter] && leadFilter !== "all") leadFilter = counts.to_send ? "to_send" : counts.replied ? "replied" : counts.waiting ? "waiting" : "all";
-  const show = r.leads.filter((l) => leadFilter === "all" || (leadFilter === "replied" ? ["replied", "interested", "stopped"].includes(l.state) : leadFilter === "to_send" ? TO_SEND.includes(l.state) : leadFilter === "waiting" ? ["waiting", "followed_up", "followed_up_2"].includes(l.state) : l.state === leadFilter));
-  const vcard = (v, i) => {
-    const tv = test?.versions.find((x) => x.template_id === v.template_id);
-    const lead = test && test.leader === v.letter && t.sent;
-    const won = test?.winner_id === v.template_id;
-    return `<article class="cr-v ${lead || won ? "lead" : ""}" style="--vc:${VCOL[i]}">
-      <div class="row"><span class="vl" style="background:${VCOL[i]}">${v.letter}</span><div style="flex:1;min-width:0"><b>${esc(v.name && v.name !== v.letter ? v.name : `Version ${v.letter}`)}</b><div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">“${esc(v.subject)}”${v.asset_ids.length ? ` · ${plural(v.asset_ids.length, "image")}` : ""}</div></div>${won ? `<span class="pill st-customer">Winner</span>` : lead ? `<span class="pill st-pilot">Ahead</span>` : ""}</div>
-      ${v.asset_ids.length ? `<div class="cr-imgs">${v.asset_ids.map((id) => `<img src="/api/assets/${id}/thumb" alt="">`).join("")}</div>` : ""}
-      ${(() => { const cv = c.versions.find((x) => x.id === v.template_id); if (!cv) return ""; const ls = vLangs(cv).filter((l) => written(cv, l));
-        return `<div class="row small muted cr-vlang"><span style="flex:1">In ${esc(ls.length > 3 ? `${langList(ls.slice(0, 3))} and ${ls.length - 3} more` : langList(ls))}</span><button class="btn sm" data-tr-edit="${cv.id}">Languages</button></div>`; })()}
-      <div class="cr-nums"><div><b>${v.sent}</b><span>sent</span></div><div><b>${v.replied}</b><span>replied</span></div><div><b>${v.interested}</b><span>interested</span></div><div><b style="color:var(--vc)">${v.sent ? pct((test?.metric === "interested" ? v.interested : v.replied) / v.sent) : "–"}</b><span>${test?.metric === "interested" ? "interest" : "reply"} rate</span></div></div>
-      ${tv && tv.sent ? `<div class="cr-bar"><span class="small muted">Likely ${test.metric === "interested" ? "interest" : "reply"} rate: ${pct(tv.low)} to ${pct(tv.high)}</span><div class="rng"><span style="left:${tv.low * 100}%;width:${Math.max(1, (tv.high - tv.low) * 100)}%"></span><i style="left:${(tv.rate || 0) * 100}%"></i></div></div>
-        <div class="cr-bar"><span class="small muted">Chance of being the best: ${pct(tv.chance_best)}</span><div class="pb"><span style="width:${tv.chance_best * 100}%"></span></div></div>` : `<p class="small muted" style="margin:0">${v.planned} planned · ${v.sent ? `${v.sent} sent so far` : "nothing sent yet"}</p>`}
-    </article>`;
-  };
-  const maxDay = Math.max(1, ...r.days.map((d) => d.sent));
-  C().innerHTML = `<div class="view wide cr">
-    <div class="topline"><div style="flex:1;min-width:280px"><p class="small muted" style="margin:0"><a href="#campaigns">Campaigns</a> / ${esc(KINDS_PL[c.kind])}</p>
-      <div class="row"><h1>${esc(c.name)}</h1>${statusPill(c.status)}</div>
-      <div class="sub">${c.started_at ? `Started ${esc(when(c.started_at))}` : ""} · ${c.daily_cap} a day · ${B.manual !== false ? "you send each one" : c.review === "auto" ? "approved once" : "you approve each morning"} · ${t.sent} of ${t.leads} emailed${r.days_left && live ? ` · about ${plural(r.days_left, "working day")} to go` : ""}</div></div>
-      <div class="row">${toSend.length && c.status !== "draft" ? `<button class="btn primary" data-send-next>${small(I.send, 15)} Send the next email <span class="small" style="opacity:.8">(${toSend.length} left)</span></button>` : ""}
-        ${c.status === "running" ? `<button class="btn" data-pause>Pause</button>` : c.status === "paused" ? `<button class="btn primary" data-resume>Resume</button>` : ""}
-        ${c.status !== "draft" ? `<button class="btn" data-more>Add leads</button>` : ""}<button class="btn" data-dup title="A new draft with the same settings and emails">Duplicate</button>
-        ${live ? `<button class="btn" data-settings>Settings</button>` : ""}</div></div>
-    ${c.status === "paused" ? `<div class="note warn" style="margin-bottom:12px">Paused: no new emails are written. Approved first emails went back to review.</div>` : ""}
-    ${c.start_on && c.start_on > new Date().toISOString().slice(0, 10) ? `<div class="note info" style="margin-bottom:12px">Starts on ${esc(c.start_on)}: the first emails are written that morning.</div>` : ""}
-    <div class="cp-bar big" role="img" aria-label="${t.replied} replied, ${t.sent - t.replied} waiting, ${t.to_review + t.approved} written, ${t.not_sent} not written yet"><span style="flex:${t.replied};background:var(--warn)"></span><span style="flex:${t.sent - t.replied};background:var(--emerald)"></span><span style="flex:${t.to_review + t.approved};background:var(--mint)"></span><span style="flex:${t.not_sent}"></span></div>
-    <div class="cr-kpi"><div><b>${t.sent}</b><span>emailed, of ${t.leads}</span></div><div><b>${t.replied}${t.sent ? ` <small>${pct(t.replied / t.sent)}</small>` : ""}</b><span>replied</span></div><div><b>${t.interested}</b><span>interested</span></div><div><b>${t.pilots}</b><span>free tests</span></div><div><b>${t.stopped}</b><span>asked to stop</span></div>${t.bounced ? `<div title="The address doesn't exist: the lead is flagged; find their own address on their site"><b>${t.bounced}</b><span>bounced</span></div>` : ""}
-      ${t.to_review ? `<a href="#today" class="todo"><b>${t.to_review}</b><span>to review in Today →</span></a>` : ""}</div>
-    ${r.versions.length > 1 ? `<section class="card cr-test"><div class="row"><h2>A/B test: which email works better?</h2><span class="small muted">counted on ${test?.metric === "interested" ? "interested leads" : "replies"} · ${Math.round(100 / r.versions.length)} % of leads each</span></div>
-        ${test?.suggest ? `<div class="cr-verdict win"><span><b>Version ${esc(test.suggest.letter)} is clearly better.</b> ${esc(test.verdict.text)} ${plural(test.suggest.unsent, "lead")} haven't had their email yet.</span><button class="btn primary" data-winner="${test.suggest.template_id}" data-letter="${esc(test.suggest.letter)}" data-unsent="${test.suggest.unsent}">Send ${esc(test.suggest.letter)} to the ${test.suggest.unsent} left</button><button class="btn" data-keep-testing>Keep testing</button></div>`
-          : test?.status === "stopped" ? `<div class="cr-verdict">${small(I.check)} <span>Test ended: ${esc(r.versions.find((v) => v.template_id === test.winner_id)?.letter || "?")} won, and the leads left get it.</span></div>`
-          : `<div class="cr-verdict ${test?.verdict.state || ""}"><span>${esc(test?.verdict.text || "")}</span>${live && t.sent >= 10 ? `<button class="btn sm" data-pick>Pick a winner myself</button>` : ""}</div>`}
-        <div class="cr-vs">${r.versions.map(vcard).join("")}</div>
-        <p class="small muted" style="margin:0">“Likely rate” is where each version's true rate probably sits, given how few emails have gone out; the ranges narrow as more go. The verdict waits until each version has about 20 emails.</p></section>`
-      : `<section class="card cr-test"><div class="cr-vs one">${r.versions.map(vcard).join("")}</div></section>`}
-    ${fuCard(c)}
-    ${Object.keys(r.languages || {}).length > 1 ? `<section class="card cr-langs"><h2>By language</h2><div class="cr-lg">${Object.entries(r.languages).map(([l, x]) => `<div><b>${esc(LANG[l] || l)}</b><span class="small muted">${x.leads} leads · ${x.sent} sent · ${x.replied} replied${x.sent ? ` (${pct(x.replied / x.sent)})` : ""}</span></div>`).join("")}</div></section>` : ""}
-    <div class="cr-low">
-      <section class="card"><h2>Day by day</h2>${r.days.length ? `<div class="cr-days">${r.days.map((d) => `<div title="${d.day}: ${d.sent} sent, ${d.replies} replies"><span class="b" style="height:${(d.sent / maxDay) * 100}%"><span class="r" style="height:${d.sent ? Math.min(100, (d.replies / d.sent) * 100) : 0}%"></span></span><span class="small muted">${new Date(d.day).toLocaleDateString("en-GB", { weekday: "short" }).slice(0, 2)}</span></div>`).join("")}</div>
-        <p class="small muted" style="margin:6px 0 0"><span class="sw" style="background:var(--emerald)"></span> sent · <span class="sw" style="background:var(--warn)"></span> replies</p>` : `<p class="small muted">Nothing sent yet.</p>`}</section>
-      <section class="card"><div class="row"><h2 style="flex:1">The ${t.leads} leads</h2><div class="seg" role="group" aria-label="Show">${[["to_send", "To send"], ["waiting", "Sent"], ["replied", "Replied"], ["no_reply", "No reply"], ["all", "All"]].map(([k, l]) => `<button data-lf="${k}" aria-pressed="${leadFilter === k}">${l} <span class="mono small">${counts[k]}</span></button>`).join("")}</div></div>
-        ${show.length ? `<div class="cr-leads">${show.slice(0, 200).map((l) => `<div class="cr-lead ${TO_SEND.includes(l.state) ? "can-send" : ""}" data-open="${l.id}" role="button" tabindex="0"><span class="vl sm" style="background:${VCOL[LET.indexOf(l.letter)] || "var(--dim)"}">${esc(l.letter)}</span><span class="nm"><b>${esc(l.person || l.name)}</b> <span class="muted small">${esc(l.city || "")}</span>${l.reply ? `<span class="small muted q">“${esc(l.reply)}”</span>` : ""}</span><span class="chip-s ${STATE[l.state]?.[1] || ""}">${STATE[l.state]?.[0] || l.state}</span><span class="small muted">${esc(l.at ? when(l.at) : "")}</span>${TO_SEND.includes(l.state) && c.status !== "draft" ? `<button class="btn sm primary" data-send-lead="${l.id}">${small(I.send, 13)} Send</button>` : `<span></span>`}</div>`).join("")}</div>` : `<p class="small muted">Nobody here.</p>`}</section>
-    </div></div>`;
-  C().onclick = async (e) => {
-    const b = e.target.closest("button, [data-open]");
-    if (!b) return;
-    const d = b.dataset;
-    try {
-      if (d.sendLead) { const i = toSend.indexOf(+d.sendLead); await sendFrom(c, toSend, Math.max(0, i)); }
-      else if (d.sendNext !== undefined) await sendFrom(c, toSend, 0);
-      else if (d.lf) { leadFilter = d.lf; renderResults(c); }
-      else if (d.open) openLead(+d.open);
-      else if (d.pause !== undefined || d.resume !== undefined) await busy(b, async () => { await api(`/api/campaigns/${c.id}/status`, { method: "POST", body: { status: d.pause !== undefined ? "paused" : "running" } }); toast(d.pause !== undefined ? "Paused. Nothing new is written until you resume." : "Resumed."); changed(); });
-      else if (d.dup !== undefined) await busy(b, async () => { const x = await api(`/api/campaigns/${c.id}/duplicate`, { method: "POST" }); location.hash = `campaign/${x.id}`; });
-      else if (d.more !== undefined) addLeads(c);
-      else if (d.settings !== undefined) liveSettings(c);
-      else if (d.fuEdit) editFollowup(c, +d.fuEdit);
-      else if (d.closeEdit !== undefined) editClose(c);
-      else if (d.trEdit) editTranslations(c, +d.trEdit);
-      else if (d.winner) {
-        if (d.confirm !== "1") { d.confirm = "1"; b.textContent = `Confirm: everyone left gets ${d.letter}`; return; }
-        await busy(b, async () => { const x = await api(`/api/campaigns/${c.id}/winner`, { method: "POST", body: { template_id: +d.winner } }); toast(`Done: the ${d.unsent} leads left get version ${d.letter}${x.moved ? "" : ""}.`); confetti(); changed(); });
-      } else if (d.keepTesting !== undefined) { b.closest(".cr-verdict").hidden = true; toast("Keep going: the banner comes back on the next visit while it's still clear."); }
-      else if (d.pick !== undefined) pickWinner(c);
-    } catch (err) { fail(err); }
-  };
-}
-
-function addLeads(c) {
+export function addLeads(c) {
   const sheet = openModal(`<div class="sheet-h"><h2>Add leads to “${esc(c.name)}”</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
     <form class="sheet-b"><label>The next ones matching its filters: how many<input class="input" type="number" name="n" min="1" max="1000" value="${Math.max(10, c.daily_cap * 5)}"></label>
     <p class="small muted" style="margin:0">In the same order.${c.results.test?.status === "stopped" ? " They get the winning version." : " They get the versions in equal shares."}</p>
@@ -940,54 +866,11 @@ function addLeads(c) {
   };
 }
 
-function liveSettings(c) {
-  const sheet = openModal(`<div class="sheet-h"><h2>Settings</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
-    <form class="sheet-b"><label>Name<input class="input" name="name" value="${esc(c.name)}"></label>
-    <label>Emails a day<input class="input" type="number" name="daily_cap" min="1" max="60" value="${c.daily_cap}"></label>
-    <label class="check"><input type="checkbox" class="chk" name="auto" ${c.review === "auto" ? "checked" : ""}> Approve first emails automatically (no morning review)</label>
-    <p class="small muted" style="margin:0">Who it reaches and its first emails are fixed once started. To change them, duplicate it. Automations can change any time, from their card.</p>
-    <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Save</button></div></form>`, { narrow: true });
-  sheet.onclick = (e) => { if (e.target.closest("[data-close]")) closeModal(); };
-  sheet.onsubmit = async (e) => {
-    e.preventDefault();
-    const f = e.target;
-    await busy(f.querySelector(".primary"), async () => {
-      await api(`/api/campaigns/${c.id}`, { method: "PUT", body: { name: f.name.value, daily_cap: +f.daily_cap.value, review: f.auto.checked ? "auto" : "daily" } });
-      closeModal();
-      changed();
-    });
-  };
-}
-
 // --- the follow-up, on a started campaign -----------------------------------------------------
-
-function fuCard(c) {
-  const row = (k) => {
-    const st = c[FU[k].status] || {}, on = fuOn(c, k) && c[FU[k].text];
-    const miss = Object.entries(st.missing || {}), text = c[FU[k].text];
-    return `<div class="cr-auto"><div class="row auto-h"><b style="flex:1">${FU[k].title}</b>
-        <span class="pill ${on ? "st-pilot" : ""}">${on ? `On, ${plural(fuDays(c, k), "day")} after ${FU[k].after}` : "Off"}</span>
-        <button class="btn sm" data-fu-edit="${k}">${text ? "Edit" : "Write it"}</button></div>
-      ${text ? `<p class="small muted fu-prev">“${esc(text.body.replace(/\s+/g, " ").slice(0, 200))}${text.body.length > 200 ? "…" : ""}”</p>`
-        : `<div class="note warn"><span><b>Not written yet</b>, so nobody gets it. Write it (a ready-made text in every language is waiting).</span></div>`}
-      ${on ? `<div class="cr-fu-n"><div><b>${st.sent || 0}</b><span>sent</span></div><div><b>${st.waiting || 0}</b><span>going out now</span></div><div><b>${st.later || 0}</b><span>planned${st.next_at ? `, next ${esc(day(st.next_at))}` : ""}</span></div><div><b>${st.replied || 0}</b><span>not needed: replied</span></div></div>` : ""}
-      ${on && miss.length ? `<div class="note warn"><span>Not written in ${esc(miss.map(([l, n]) => `${LANG[l] || l} (${plural(n, "lead")})`).join(", "))}: they don't get it until you add it.</span></div>` : ""}</div>`;
-  };
-  const closeRow = () => {
-    const on = c.close_on !== false, st = c.close_status || {};
-    return `<div class="cr-auto"><div class="row auto-h"><b style="flex:1">Mark as “No reply” those who never answer</b>
-        <span class="pill ${on ? "st-pilot" : ""}">${on ? `On, ${plural(closeDays(c), "day")} after the last email` : "Off"}</span>
-        <button class="btn sm" data-close-edit>Edit</button></div>
-      ${on ? `<div class="cr-fu-n"><div><b>${st.done || 0}</b><span>marked No reply</span></div><div><b>${st.later || 0}</b><span>to mark if still silent${st.next_at ? `, next ${esc(day(st.next_at))}` : ""}</span></div></div>` : ""}</div>`;
-  };
-  return `<section class="card cr-fu"><div class="row"><h2 style="flex:1;margin:0">Automations</h2><span class="small muted">what the app does on its own · change them any time</span></div>
-    ${row(1)}${row(2)}${closeRow()}
-    <p class="small muted" style="margin:0">Follow-ups go out on their own, Monday to Friday 9:00–18:00, a few minutes apart, as replies in the first email's conversation. A reply stops them. If the app was off on the day, they go out once it's back on.</p></section>`;
-}
 
 /** A started campaign's email in other languages: its text is fixed, but languages can be
  * added or corrected any time. Leads speaking a new one can then join with "Add leads". */
-function editTranslations(c, versionId) {
+export function editTranslations(c, versionId) {
   const v = structuredClone(c.versions.find((x) => x.id === versionId));
   const main = mainLang(v);
   v.translations = v.translations || {};
@@ -1034,7 +917,7 @@ function editTranslations(c, versionId) {
   };
 }
 
-function editClose(c) {
+export function editClose(c) {
   const sheet = openModal(`<div class="sheet-h"><h2>Automation: “No reply”</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
     <form class="sheet-b"><label class="check"><input type="checkbox" class="chk" name="on" ${c.close_on !== false ? "checked" : ""}> Mark as “No reply” those who never answer</label>
       <label class="fu-days small muted"><span>after</span><input class="input sm" type="number" name="days" min="1" max="90" value="${closeDays(c)}"><span>days after the last email they got from this campaign</span></label>
@@ -1053,7 +936,7 @@ function editClose(c) {
   };
 }
 
-function editFollowup(c, k) {
+export function editFollowup(c, k) {
   const x = { versions: c.versions, [FU[k].text]: structuredClone(fuOf(c, k)), [FU[k].def]: c[FU[k].def] };
   let on = c[FU[k].on] !== false || !c[FU[k].text], days = fuDays(c, k), lang = null;
   const blocked = k === 2 && c.followups_on === false;
@@ -1084,7 +967,7 @@ function editFollowup(c, k) {
   };
 }
 
-function pickWinner(c) {
+export function pickWinner(c) {
   const vs = c.results.versions;
   const sheet = openModal(`<div class="sheet-h"><h2>Pick the winner</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
     <div class="sheet-b"><p class="muted" style="margin:0">Everyone not emailed yet gets the version you pick. The test stops; its results stay here.</p>

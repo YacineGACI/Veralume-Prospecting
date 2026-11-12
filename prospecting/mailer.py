@@ -27,7 +27,7 @@ from sqlalchemy.orm import Session
 from prospecting import languages, pilot
 from prospecting.config import settings
 from prospecting.contacts import shared_contacts, usable_emails
-from prospecting.db import Activity, Lead, Message, Photo, Setting, Template, now
+from prospecting.db import Activity, Campaign, Lead, Message, Photo, Setting, Template, now
 from prospecting.text import host
 
 TZ = ZoneInfo(settings.timezone)
@@ -123,22 +123,30 @@ def iso(dt: datetime) -> str:
     return dt.astimezone(UTC).isoformat(timespec="seconds")
 
 
-def in_window(dt: datetime | None = None) -> bool:
+def window(c: Any = None) -> tuple[tuple[int, ...], tuple[int, int]]:
+    """The days (Monday = 0) and hours [start, end) emails may go out: a campaign's own,
+    else the app's."""
+    days = tuple(sorted(set(c.send_days))) if c is not None and c.send_days else tuple(settings.send_weekdays)
+    hours = tuple(c.send_hours) if c is not None and c.send_hours and len(c.send_hours) == 2 else tuple(settings.send_hours)
+    return days or tuple(settings.send_weekdays), (int(hours[0]), int(hours[1]))
+
+
+def in_window(dt: datetime | None = None, c: Any = None) -> bool:
     dt = dt or local()
-    start, end = settings.send_hours
-    return dt.weekday() in settings.send_weekdays and start <= dt.hour < end
+    days, (start, end) = window(c)
+    return dt.weekday() in days and start <= dt.hour < end
 
 
-def first_slot(dt: datetime) -> datetime:
+def first_slot(dt: datetime, c: Any = None) -> datetime:
     """`dt`, or the start of the next sending hours if it falls outside them (evening,
     weekend): when something due at `dt` actually goes out."""
     dt = local(iso(dt))
-    start, end = settings.send_hours
+    days, (start, end) = window(c)
     if dt.hour >= end:
         dt = day_start(dt) + timedelta(days=1, hours=start)
     elif dt.hour < start:
         dt = day_start(dt) + timedelta(hours=start)
-    while dt.weekday() not in settings.send_weekdays:
+    while dt.weekday() not in days:
         dt = day_start(dt) + timedelta(days=1, hours=start)
     return dt
 
@@ -149,6 +157,15 @@ def morning(days_from_now: int) -> datetime:
     while dt.weekday() not in settings.send_weekdays:
         dt += timedelta(days=1)
     return dt + timedelta(minutes=random.randint(5, 55))
+
+
+def _sent_today_for(s: Session, campaign_id: int) -> int:
+    return s.scalar(
+        select(func.count(Message.id)).where(
+            Message.direction == "out", Message.status == "sent",
+            Message.campaign_id == campaign_id, Message.sent_at >= iso(day_start()),
+        )
+    ) or 0  # fmt: skip
 
 
 def sent_today(s: Session) -> int:
@@ -553,17 +570,32 @@ _NEXT_SLOT: dict[str, datetime] = {}
 def send_due(s: Session) -> Message | None:
     """Send the oldest approved message if the window, the cap and the gap allow.
     Called every few seconds by the worker; sends at most one. The caller commits."""
-    if not settings.mail_configured or not in_window():
+    if not settings.mail_configured:
         return None
     if _NEXT_SLOT.get("at") and local() < _NEXT_SLOT["at"]:
         return None
     if sent_today(s) >= settings.daily_send_cap:
         return None
-    msg = s.scalars(
+    msg = None
+    camps: dict[int, Any] = {}
+    for m in s.scalars(
         select(Message)
         .where(Message.direction == "out", Message.status == "approved", Message.due_at <= now())
-        .order_by(Message.due_at)
-    ).first()
+        .order_by(Message.due_at).limit(300)
+    ):  # fmt: skip
+        c = None
+        if m.campaign_id:
+            if m.campaign_id not in camps:
+                camps[m.campaign_id] = s.get(Campaign, m.campaign_id)
+            c = camps[m.campaign_id]
+        if c is not None and c.status not in ("running", "done"):
+            continue  # paused or archived: nothing of it goes out
+        if not in_window(c=c):
+            continue
+        if c is not None and _sent_today_for(s, c.id) >= (c.daily_cap or settings.daily_send_cap):
+            continue  # its own daily cap: first emails and follow-ups together
+        msg = m
+        break
     if msg is None:
         return None
     try:

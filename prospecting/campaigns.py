@@ -18,13 +18,14 @@ import random
 import unicodedata
 import uuid
 from collections import Counter, defaultdict
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from prospecting import experiments, languages, mailer, translations
+from prospecting.config import settings
 from prospecting.contacts import shared_contacts, usable_emails, usable_phones
 from prospecting.db import (
     Activity, Campaign, CampaignLead, Experiment, Lead, Message, Template, now,
@@ -502,11 +503,11 @@ def prepare(s: Session, c: Campaign, n: int | None = None) -> int:
 
 def prepare_running(s: Session) -> int:
     """Once a working day, write each running campaign's batch."""
-    if not mailer.in_window():
-        return 0
     today = local().date().isoformat()
     n = 0
     for c in s.scalars(select(Campaign).where(Campaign.status == "running")):
+        if not mailer.in_window(c=c):
+            continue
         key = f"prepared:{c.id}"
         if mailer.get_setting(s, key, None) != today:
             n += prepare(s, c)
@@ -669,12 +670,30 @@ def results(s: Session, c: Campaign, with_leads: bool = True) -> dict[str, Any]:
     cap = c.daily_cap or 20
     out["days_left"] = -(-left // cap) if left else 0
     if with_leads:
+        # What comes next for each (the earliest follow-up still to go), and every email
+        # of this campaign each lead got, for the lead list's timeline.
+        nxt: dict[int, dict[str, Any]] = {}
+        for step in STEPS:
+            for base, what in _followup_rows(s, c, step):
+                if what in ("later", "due", "waiting") and base.lead_id not in nxt:
+                    nxt[base.lead_id] = {"step": step, "at": followup_due_at(c, base, step)}
+        mails: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for m in s.scalars(select(Message).where(Message.campaign_id == c.id, Message.direction == "out")
+                           .order_by(Message.id)):  # fmt: skip
+            mails[m.lead_id].append({"step": m.step, "status": m.status, "error": m.error,
+                                     "at": m.sent_at or m.due_at, "to": m.to_addr, "id": m.id})  # fmt: skip
         out["leads"] = [
             {"id": r.lead_id, "name": leads[r.lead_id].name if r.lead_id in leads else "?",
              "person": _person(leads.get(r.lead_id)), "city": leads[r.lead_id].city if r.lead_id in leads else None,
+             "country": leads[r.lead_id].country if r.lead_id in leads else None,
+             "language": (written[r.lead_id].language if r.lead_id in written and written[r.lead_id].language
+                          else languages.of_lead(leads[r.lead_id]) if r.lead_id in leads else None),
+             "email": written[r.lead_id].to_addr if r.lead_id in written else None,
              "letter": letters.get(r.template_id, "?"), "state": st, "at": at,
              "reply": (replies[r.lead_id].body[:160] if r.lead_id in replies else None),
-             "message_id": written[r.lead_id].id if r.lead_id in written else None}
+             "reply_at": replies[r.lead_id].sent_at if r.lead_id in replies else None,
+             "message_id": written[r.lead_id].id if r.lead_id in written else None,
+             "next": nxt.get(r.lead_id), "skip": bool(r.no_followups), "emails": mails.get(r.lead_id, [])}
             for r, st, at in states
         ]  # fmt: skip
     return out
@@ -784,6 +803,9 @@ def _followup_rows(s: Session, c: Campaign, step: int = 1) -> list[tuple[Message
     )}  # fmt: skip
     if not bases:
         return []
+    # Only leads still in the campaign; those you skipped by hand get no follow-up.
+    members = {r.lead_id: r for r in s.scalars(select(CampaignLead).where(CampaignLead.campaign_id == c.id))}
+    bases = {lid: m for lid, m in bases.items() if lid in members}
     mine: dict[int, Message] = {}
     for m in s.scalars(
         select(Message).where(Message.campaign_id == c.id, Message.step == step,
@@ -814,6 +836,8 @@ def _followup_rows(s: Session, c: Campaign, step: int = 1) -> list[tuple[Message
         elif lead is None or lead.do_not_contact or lead.status in ("lost", "customer") \
                 or outcome.get(lid, {}).get("reply") or (later_out.get(lid) or "") > (base.sent_at or ""):
             what = "replied"
+        elif members[lid].no_followups:
+            what = "skipped"
         elif fu is None or not fu.body.strip() or not is_on(c, step) or c.status not in ("running", "done"):
             what = "off"
         elif (base.language or "fr") not in langs:
@@ -828,7 +852,21 @@ def followup_due_at(c: Campaign, base: Message, step: int = 1) -> str:
     """When it goes out: its delay after the email before it, moved to the next sending
     hours when that falls on an evening or a weekend."""
     due = max(local(base.sent_at) + timedelta(days=days_of(c, step)), local())  # due already: now
-    return iso(mailer.first_slot(due))
+    return iso(mailer.first_slot(due, c))
+
+
+def _write_followup(s: Session, c: Campaign, step: int, base: Message, fu: Template) -> Message:
+    """Follow-up `step` to the lead of `base` (the email before it), approved: the worker
+    sends it at the next free slot, as a reply in the same conversation."""
+    lead = s.get(Lead, base.lead_id)
+    d = mailer.draft(s, lead, fu, base.language or "fr")
+    subj = base.subject if base.subject.lower().startswith("re:") else f"Re: {base.subject}"
+    return mailer.new_outbound(
+        s, lead, subject=subj, body=d["body"], to=base.to_addr, step=step,
+        template_id=fu.id, campaign_id=c.id, language=d["language"],
+        in_reply_to=base.message_id, status="approved", asset_ids=[],
+        experiment_id=base.experiment_id,
+    )  # fmt: skip
 
 
 def write_due_followups(s: Session) -> int:
@@ -842,18 +880,167 @@ def write_due_followups(s: Session) -> int:
             if fu is None or not is_on(c, step):
                 continue
             for base, what in _followup_rows(s, c, step):
-                if what != "due":
-                    continue
-                lead = s.get(Lead, base.lead_id)
-                d = mailer.draft(s, lead, fu, base.language or "fr")
-                subj = base.subject if base.subject.lower().startswith("re:") else f"Re: {base.subject}"
-                mailer.new_outbound(
-                    s, lead, subject=subj, body=d["body"], to=base.to_addr, step=step,
-                    template_id=fu.id, campaign_id=c.id, language=d["language"],
-                    in_reply_to=base.message_id, status="approved", asset_ids=[],
-                    experiment_id=base.experiment_id,
-                )  # fmt: skip
-                n += 1
+                if what == "due":
+                    _write_followup(s, c, step, base, fu)
+                    n += 1
+    return n
+
+
+# --- acting on some leads of a started campaign -------------------------------------------
+
+
+def followup_now(s: Session, c: Campaign, lead_id: int) -> Message:
+    """Write this lead's next follow-up now instead of on its day (it goes out at the next
+    free slot inside the sending hours)."""
+    for step in STEPS:
+        fu = followup_of(s, c, step)
+        row = next(((b, w) for b, w in _followup_rows(s, c, step) if b.lead_id == lead_id), None)
+        if row is None or fu is None:
+            continue
+        base, what = row
+        if what in ("later", "due"):
+            return _write_followup(s, c, step, base, fu)
+        if what == "waiting":
+            raise CampaignError("Their follow-up is already written: it goes out at the next free slot.")
+        if what in ("replied", "skipped", "language", "off"):
+            raise CampaignError({"replied": "They replied (or were contacted since): no follow-up.",
+                                 "skipped": "Their follow-ups are skipped. Resume them first.",
+                                 "language": "The follow-up isn't written in their language yet.",
+                                 "off": "This follow-up is switched off."}[what])  # fmt: skip
+    raise CampaignError("No follow-up is left for them: their first email may not be sent yet.")
+
+
+def _members(s: Session, c: Campaign, lead_ids: list[int]) -> list[CampaignLead]:
+    return list(s.scalars(select(CampaignLead).where(CampaignLead.campaign_id == c.id,
+                                                     CampaignLead.lead_id.in_(lead_ids))))  # fmt: skip
+
+
+def _drop_unsent(s: Session, c: Campaign, lead_ids: list[int], steps: tuple[int, ...]) -> int:
+    """Delete this campaign's emails to these leads written but not sent yet."""
+    rows = list(s.scalars(
+        select(Message).where(Message.campaign_id == c.id, Message.lead_id.in_(lead_ids),
+                              Message.step.in_(steps), Message.direction == "out",
+                              Message.status.in_(("queued", "approved")))
+    ))  # fmt: skip
+    for m in rows:
+        s.delete(m)
+    return len(rows)
+
+
+def set_skip(s: Session, c: Campaign, lead_ids: list[int], skip: bool) -> int:
+    """Skip (or resume) the follow-ups of these leads. Skipping drops any already written."""
+    rows = _members(s, c, lead_ids)
+    for r in rows:
+        r.no_followups = skip
+    if skip and rows:
+        _drop_unsent(s, c, [r.lead_id for r in rows], STEPS)
+    return len(rows)
+
+
+def remove_leads(s: Session, c: Campaign, lead_ids: list[int]) -> int:
+    """Take these leads out of the campaign: nothing more goes to them from it (emails
+    already sent stay in their history), and "Add leads" won't pick them again."""
+    rows = _members(s, c, lead_ids)
+    ids = [r.lead_id for r in rows]
+    if ids:
+        _drop_unsent(s, c, ids, (0, *STEPS))
+        for r in rows:
+            s.delete(r)
+        c.excluded = sorted(set(c.excluded or []) | set(ids))
+        c.included = [x for x in (c.included or []) if x not in ids]
+    return len(ids)
+
+
+def move_leads(s: Session, c: Campaign, target: Campaign, lead_ids: list[int]) -> tuple[int, list[str]]:
+    """Move leads not emailed yet by this campaign to another one."""
+    if target.id == c.id:
+        raise CampaignError("Pick another campaign.")
+    if target.status not in ("draft", "running", "paused"):
+        raise CampaignError("That campaign is finished or archived.")
+    sent = set(s.scalars(select(Message.lead_id).where(
+        Message.campaign_id == c.id, Message.lead_id.in_(lead_ids), Message.direction == "out",
+        Message.status == "sent")))  # fmt: skip
+    notes = [f"{len(sent)} already got this campaign's email, so they stay."] if sent else []
+    free = [i for i in lead_ids if i not in sent]
+    if not free:
+        return 0, notes
+    remove_leads(s, c, free)
+    s.flush()
+    if target.status == "draft":
+        target.included = list(dict.fromkeys([*(target.included or []), *free]))
+        target.excluded = [x for x in (target.excluded or []) if x not in free]
+        return len(free), notes
+    added, more = add_specific(s, target, free)
+    return added, notes + more
+
+
+# --- what goes out on its own in the next days ----------------------------------------------
+
+
+def forecast(s: Session, c: Campaign, days: int = 12) -> list[dict[str, Any]]:
+    """The follow-ups each coming sending day will carry, if nobody replies: each one on
+    its day (or the first free day after it), at most `daily_cap` a day."""
+    if c.status not in ("running", "done", "paused"):
+        return []
+    cap = c.daily_cap or settings.daily_send_cap
+    queue: list[tuple[datetime, int, int]] = []  # (due, step, lead)
+    planned1: set[int] = set()
+    for step in STEPS:
+        for base, what in _followup_rows(s, c, step):
+            if what in ("later", "due", "waiting"):
+                due = local() if what != "later" else local(base.sent_at) + timedelta(days=days_of(c, step))
+                queue.append((due, step, base.lead_id))
+                if step == 1:
+                    planned1.add(base.lead_id)
+    two = is_on(c, 2) and followup_of(s, c, 2) is not None
+    out: list[dict[str, Any]] = []
+    d = local().date()
+    today_left = max(0, cap - mailer._sent_today_for(s, c.id))
+    wdays, _ = mailer.window(c)
+    while len(out) < days:
+        if d.weekday() in wdays:
+            room = today_left if d == local().date() else cap
+            ready = sorted((q for q in queue if q[0].date() <= d), key=lambda q: q[0])
+            row = {"day": d.isoformat(), "fu1": 0, "fu2": 0}
+            for q in ready[:room]:
+                queue.remove(q)
+                row[f"fu{q[1]}"] += 1
+                if q[1] == 1 and two and q[2] in planned1:  # if still silent, follow-up 2 then
+                    queue.append((datetime.combine(d, datetime.min.time(), tzinfo=mailer.TZ)
+                                  + timedelta(days=days_of(c, 2)), 2, q[2]))  # fmt: skip
+            out.append(row)
+        d += timedelta(days=1)
+    return out
+
+
+# --- pause on its own when too many addresses bounce ----------------------------------------
+
+
+def _bounces(s: Session, c: Campaign) -> tuple[int, int]:
+    """(first emails bounced, first emails that went out) for this campaign."""
+    rows = s.execute(select(Message.status, Message.error).where(
+        Message.campaign_id == c.id, Message.step == 0, Message.direction == "out",
+        Message.status.in_(("sent", "failed")))).all()  # fmt: skip
+    bounced = sum(1 for st, err in rows if st == "failed" and err == "bounced")
+    return bounced, sum(1 for st, _ in rows if st == "sent") + bounced
+
+
+BOUNCE_MIN = 20  # first emails out before the rate means anything
+
+
+def pause_on_bounces(s: Session) -> int:
+    """Pause running campaigns whose bounce rate passed their limit (only on a new bounce
+    since they were last resumed). The caller commits."""
+    n = 0
+    for c in s.scalars(select(Campaign).where(Campaign.status == "running", Campaign.bounce_pause.isnot(None))):
+        bounced, out = _bounces(s, c)
+        if out < BOUNCE_MIN or bounced <= (c.bounce_ack or 0) or bounced * 100 < c.bounce_pause * out:
+            continue
+        c.status = "paused"
+        c.paused_reason = (f"Paused on its own: {bounced} of {out} first emails bounced "
+                           f"({round(bounced * 100 / out)} %, your limit is {c.bounce_pause} %). "
+                           "Fix or remove those addresses, then resume.")  # fmt: skip
+        n += 1
     return n
 
 

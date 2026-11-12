@@ -101,7 +101,7 @@ def test_catch_up_after_the_app_was_off(db, monkeypatch):
     with db() as s:
         assert C.write_due_followups(s) == 3
         s.commit()
-    monkeypatch.setattr(mailer, "in_window", lambda dt=None: True)
+    monkeypatch.setattr(mailer, "in_window", lambda dt=None, c=None: True)
     mailer._NEXT_SLOT.clear()
     with db() as s:
         assert mailer.send_due(s).step == 1

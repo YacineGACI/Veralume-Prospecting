@@ -3,22 +3,25 @@ dossiers (reusable sets of images)."""
 
 from __future__ import annotations
 
+import csv
+import io
 from collections import Counter
 from datetime import date
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from prospecting import campaigns as C
 from prospecting import mailer, pilot
+from prospecting.contacts import usable_emails
 from prospecting.api.outreach import _msg as msg_dict
 from prospecting.api.outreach import mailbox_status
 from prospecting.config import settings
 from prospecting.db import (
-    KINDS, Asset, Campaign, CampaignLead, Dossier, Experiment, Lead, Message, Template, now,
-    session,
+    KINDS, STATUSES, Activity, Asset, Campaign, CampaignLead, Dossier, Experiment, Lead, Message,
+    Template, now, session,
 )  # fmt: skip
 from prospecting.languages import LANGUAGES, of_lead
 from prospecting.mailer import MailError
@@ -55,6 +58,10 @@ def _config(s, c: Campaign) -> dict[str, Any]:
         "close_on": c.close_on is not False, "close_days": C.close_days_of(c),
         "started_at": c.started_at, "ended_at": c.ended_at, "created_at": c.created_at,
         "versions": [_version(t, i) for i, t in enumerate(C.versions(s, c))],
+        "send_days": list(mailer.window(c)[0]), "send_hours": list(mailer.window(c)[1]),
+        "window_default": {"days": list(settings.send_weekdays), "hours": list(settings.send_hours)},
+        "notes": c.notes or "", "bounce_pause": c.bounce_pause, "paused_reason": c.paused_reason,
+        "send_mode": mailer.send_mode(s), "sender": settings.sender,
     }  # fmt: skip
 
 
@@ -91,7 +98,7 @@ def _card(s, c: Campaign) -> dict[str, Any]:
 def list_campaigns() -> dict[str, Any]:
     with session() as s:
         rows = list(s.scalars(select(Campaign).order_by(Campaign.id.desc())))
-        order = {"running": 0, "paused": 1, "draft": 2, "done": 3}
+        order = {"running": 0, "paused": 1, "draft": 2, "done": 3, "archived": 4}
         rows.sort(key=lambda c: order.get(c.status, 4))
         return {"items": [_card(s, c) for c in rows], "mailbox": mailbox_status(s)}
 
@@ -236,6 +243,10 @@ class CampaignIn(BaseModel):
     close_on: bool | None = None  # mark "No reply" those who never answered…
     close_days: int | None = None  # …this many days after the last email
     versions: list[VersionIn] | None = None
+    send_days: list[int] | None = None  # weekdays, Monday = 0
+    send_hours: list[int] | None = None  # [start, end)
+    notes: str | None = None
+    bounce_pause: int | None = None  # % of first emails bounced that pauses it; 0: never
 
 
 def _apply_followups(s, c: Campaign, b: CampaignIn) -> None:
@@ -302,6 +313,21 @@ def _apply(s, c: Campaign, b: CampaignIn) -> None:
             raise HTTPException(422, "review is daily or auto")
         c.review = b.review
     _apply_followups(s, c, b)
+    if b.notes is not None:
+        c.notes = b.notes[:5000]
+    if b.send_days is not None:
+        days = sorted({d for d in b.send_days if 0 <= d <= 6})
+        if not days:
+            raise HTTPException(422, "Pick at least one day.")
+        c.send_days = days
+    if b.send_hours is not None:
+        if len(b.send_hours) != 2 or not 0 <= b.send_hours[0] < b.send_hours[1] <= 24:
+            raise HTTPException(422, "The hours go from a start to a later end, 0 to 24.")
+        c.send_hours = [int(b.send_hours[0]), int(b.send_hours[1])]
+    if b.bounce_pause is not None:
+        if not 0 <= b.bounce_pause <= 50:
+            raise HTTPException(422, "The bounce limit is 1 to 50 %, or 0 for never.")
+        c.bounce_pause = b.bounce_pause or None
     if b.close_on is not None:
         c.close_on = b.close_on
     if b.close_days is not None:
@@ -409,6 +435,10 @@ def get_one(campaign_id: int) -> dict[str, Any]:
             out["followup_status"] = C.followup_status(s, c, 1)
             out["followup2_status"] = C.followup_status(s, c, 2)
             out["close_status"] = C.close_status(s, c)
+            out["forecast"] = C.forecast(s, c)
+            out["others"] = [{"id": x.id, "name": x.name, "status": x.status} for x in s.scalars(
+                select(Campaign).where(Campaign.id != c.id, Campaign.status.in_(("draft", "running", "paused")))
+                .order_by(Campaign.id.desc()))]  # fmt: skip
         out["mailbox"] = mailbox_status(s)
         return out
 
@@ -426,8 +456,11 @@ def save(campaign_id: int, b: CampaignIn) -> dict[str, Any]:
 def delete(campaign_id: int) -> dict[str, Any]:
     with session() as s:
         c = _get(s, campaign_id)
-        if c.status != "draft":
-            raise HTTPException(409, "Only a draft can be deleted. Pause a started campaign instead.")
+        if c.status != "draft":  # its unsent emails go; sent ones stay in each lead's history
+            rows = list(s.scalars(select(CampaignLead).where(CampaignLead.campaign_id == c.id)))
+            C._drop_unsent(s, c, [r.lead_id for r in rows], (0, *C.STEPS))
+            for r in rows:
+                s.delete(r)
         for t in [*C.versions(s, c), *(C.followup_of(s, c, k) for k in C.STEPS)]:
             if t is not None:
                 t.archived = True
@@ -495,8 +528,17 @@ def set_status(campaign_id: int, b: StatusIn) -> dict[str, Any]:
                 m.status = "queued"
         elif b.status == "running":
             c.status = "running"
+            c.paused_reason = None
+            c.bounce_ack = C._bounces(s, c)[0]  # only a new bounce pauses it again
+        elif b.status == "archived":
+            c.status = "archived"  # nothing more goes out; hidden from the list
+            for m in s.scalars(select(Message).where(Message.campaign_id == c.id, Message.step == 0,
+                                                     Message.status == "approved")):  # fmt: skip
+                m.status = "queued"
+        elif b.status == "unarchive":
+            c.status = "paused"
         else:
-            raise HTTPException(422, "status is paused or running")
+            raise HTTPException(422, "status is paused, running, archived or unarchive")
         s.commit()
         return _config(s, c)
 
@@ -554,6 +596,143 @@ def email_for_lead(campaign_id: int, lead_id: int) -> dict[str, Any]:
             raise HTTPException(409, str(e)) from e
         s.commit()
         return {"lead": summary(s.get(Lead, lead_id)), "message": msg_dict(m)}
+
+
+class BulkIn(BaseModel):
+    action: str  # followup_now | skip | resume | remove | move | status
+    lead_ids: list[int]
+    target: int | None = None  # move: the campaign
+    status: str | None = None  # status: the lead status
+
+
+@router.post("/campaigns/{campaign_id}/leads/bulk")
+def bulk(campaign_id: int, b: BulkIn) -> dict[str, Any]:
+    """Act on some leads of a started campaign at once."""
+    ids = list(dict.fromkeys(b.lead_ids))[:1000]
+    with session() as s:
+        c = _get(s, campaign_id)
+        done, notes = 0, []
+        try:
+            if b.action == "followup_now":
+                for lid in ids:
+                    try:
+                        C.followup_now(s, c, lid)
+                        done += 1
+                    except C.CampaignError as e:
+                        lead = s.get(Lead, lid)
+                        notes.append(f"{lead.name if lead else lid}: {e}")
+            elif b.action in ("skip", "resume"):
+                done = C.set_skip(s, c, ids, b.action == "skip")
+            elif b.action == "remove":
+                done = C.remove_leads(s, c, ids)
+            elif b.action == "move":
+                target = s.get(Campaign, b.target or 0)
+                if target is None:
+                    raise HTTPException(404, "No such campaign")
+                done, notes = C.move_leads(s, c, target, ids)
+            elif b.action == "status":
+                if b.status not in STATUSES:
+                    raise HTTPException(422, "Unknown status")
+                for lead in s.scalars(select(Lead).where(Lead.id.in_(ids))):
+                    if lead.status != b.status:
+                        s.add(Activity(lead_id=lead.id, kind="status", text=f"{lead.status} → {b.status}"))
+                        lead.status = b.status
+                        done += 1
+            else:
+                raise HTTPException(422, "Unknown action")
+        except C.CampaignError as e:
+            raise HTTPException(409, str(e)) from e
+        s.commit()
+        return {"done": done, "notes": notes[:20]}
+
+
+@router.get("/campaigns/{campaign_id}/export.csv")
+def export(campaign_id: int) -> Response:
+    """The campaign's leads and where each one is, for a spreadsheet."""
+    with session() as s:
+        c = _get(s, campaign_id)
+        r = C.results(s, c)
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["lead_id", "name", "person", "town", "country", "language", "email", "version",
+                "state", "last_email", "next_step", "next_at", "follow_ups_skipped", "reply"])  # fmt: skip
+    for x in r["leads"]:
+        nx = x.get("next") or {}
+        w.writerow([x["id"], x["name"], x["person"] or "", x["city"] or "", x["country"] or "",
+                    x["language"] or "", x["email"] or "", x["letter"], x["state"], x["at"] or "",
+                    f"follow-up {nx['step']}" if nx else "", nx.get("at", ""), "yes" if x["skip"] else "",
+                    (x["reply"] or "").replace("\n", " ")])  # fmt: skip
+    name = "".join(ch if ch.isalnum() else "-" for ch in c.name).strip("-")[:60] or f"campaign-{c.id}"
+    return Response(buf.getvalue().encode("utf-8-sig"), media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{name}.csv"'})  # fmt: skip
+
+
+class PreviewIn(BaseModel):
+    step: int = 0  # 0: the first email (version template_id); 1, 2: a follow-up
+    template_id: int | None = None
+    language: str | None = None
+    body: str | None = None  # a follow-up's unsaved text
+    lead_id: int | None = None
+    test: bool = False  # also send it to your own address
+
+
+def _pick_lead(s, c: Campaign, lang: str | None, lead_id: int | None) -> Lead | None:
+    if lead_id:
+        return s.get(Lead, lead_id)
+    rows = list(s.scalars(select(CampaignLead).where(CampaignLead.campaign_id == c.id)
+                          .order_by(CampaignLead.rank).limit(400)))  # fmt: skip
+    leads = [l for l in (s.get(Lead, r.lead_id) for r in rows) if l is not None]
+    if c.status == "draft" and not leads:
+        leads = C.audience(s, c)[0][:400]
+    return next((l for l in leads if lang and of_lead(l) == lang), None) or (leads[0] if leads else None)
+
+
+@router.post("/campaigns/{campaign_id}/preview")
+def preview(campaign_id: int, b: PreviewIn) -> dict[str, Any]:
+    """One of the campaign's emails, filled in for a real lead of it, as they'd get it."""
+    with session() as s:
+        c = _get(s, campaign_id)
+        vs = C.versions(s, c)
+        first = next((t for t in vs if t.id == b.template_id), vs[0] if vs else None)
+        if first is None:
+            raise HTTPException(409, "Write the first email first.")
+        lang = b.language or first.language or "fr"
+        lead = _pick_lead(s, c, lang, b.lead_id)
+        if lead is None:
+            raise HTTPException(409, "No lead in this campaign yet to fill the email in for.")
+        d0 = mailer.draft(s, lead, first, lang)
+        if b.step in C.STEPS:
+            saved = C.followup_of(s, c, b.step)
+            if b.body is not None:
+                tr = {lang: {"subject": "Re:", "body": b.body}} if lang != "fr" else {}
+                t = Template(key="preview", name="Follow-up", segment=c.kind, step=b.step, subject="Re:",
+                             body=b.body if lang == "fr" else (saved.body if saved else b.body),
+                             language="fr", translations=tr, attach_photo=False, asset_ids=[])  # fmt: skip
+            elif saved is not None:
+                t = saved
+            else:
+                raise HTTPException(409, f"Follow-up {b.step} isn't written yet.")
+            d = mailer.draft(s, lead, t, lang)
+            subject, body, assets = f"Re: {d0['subject']}", d["body"], []
+        else:
+            subject, body, assets = d0["subject"], d0["body"], d0["asset_ids"]
+        to = usable_emails(lead)
+        out = {"subject": subject, "body": body, "language": d0["language"], "asset_ids": assets,
+               "lead": {"id": lead.id, "name": lead.name, "person": C._person(lead)},
+               "to": to[0] if to else None}  # fmt: skip
+        if b.test:
+            if not settings.mail_configured or not settings.sender:
+                raise HTTPException(409, "Connect your mailbox first (Settings).")
+            msg = Message(lead_id=lead.id, direction="out", status="test", to_addr=settings.sender,
+                          language=d0["language"], subject=f"[Test · {lead.name}] {subject}", body=body,
+                          step=b.step, asset_ids=assets)  # fmt: skip
+            try:
+                mailer.deliver(mailer.build(msg, lead, s))
+            except MailError as e:
+                raise HTTPException(409, str(e)) from e
+            out["sent_to"] = settings.sender
+        s.rollback()  # nothing about a preview is kept
+        return out
 
 
 class TestIn(BaseModel):
