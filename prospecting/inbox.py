@@ -50,6 +50,11 @@ _BOUNCER = re.compile(r"mailer-daemon|postmaster|mail delivery", re.IGNORECASE)
 _ADDR = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 
 
+def _clean(value: Any) -> str:
+    """Mailbox text must not carry NUL bytes into PostgreSQL queries or records."""
+    return str(value or "").replace("\x00", "")
+
+
 def body_text(em: EmailMessage) -> str:
     part = em.get_body(preferencelist=("plain", "html"))
     if part is None:
@@ -57,7 +62,7 @@ def body_text(em: EmailMessage) -> str:
     text = part.get_content()
     if part.get_content_type() == "text/html":
         text = HTMLParser(text).text(separator="\n")
-    return text
+    return _clean(text)
 
 
 def new_text(text: str) -> str:
@@ -76,7 +81,10 @@ def new_text(text: str) -> str:
 
 
 def _ids(value: Any) -> list[str]:
-    return re.findall(r"<[^>]+>", str(value or ""))
+    # Message IDs contain an @ and no whitespace, HTML brackets or control bytes.
+    # Bounce bodies can contain both HTML tags and arbitrary attachment bytes.
+    return re.findall(r"<[^<>\s\x00-\x1f\x7f@]+@[^<>\s\x00-\x1f\x7f@]+>",
+                      str(value or ""))
 
 
 def _all_text(em: EmailMessage) -> str:
@@ -96,18 +104,18 @@ def _all_text(em: EmailMessage) -> str:
                     f"{k}: {v}" for k, v in inner.items() if k.lower() in ("message-id", "to")
                 )
             continue
-        if part.is_multipart():
+        if part.is_multipart() or part.get_content_maintype() != "text":
             continue
         payload = part.get_payload(decode=True)
         if isinstance(payload, bytes):
             out.append(payload.decode("utf-8", "ignore"))
-    return "\n".join(out)
+    return _clean("\n".join(out))
 
 
 def _bounce(s: Session, em: EmailMessage) -> str | None:
     text = _all_text(em)
     refs = _ids(em["In-Reply-To"]) + _ids(em["References"]) + _ids(text)
-    failed = [a.lower() for a in _ADDR.findall(str(em["X-Failed-Recipients"] or ""))]
+    failed = [a.lower() for a in _ADDR.findall(_clean(em["X-Failed-Recipients"]))]
     failed += [
         a.lower()
         for a in re.findall(
@@ -134,14 +142,14 @@ def _bounce(s: Session, em: EmailMessage) -> str | None:
 
 def handle(s: Session, em: EmailMessage) -> str | None:
     """Record one incoming email if it concerns a lead: "reply", "stop", "bounce" or None."""
-    mid = str(em["Message-ID"] or "").strip()
+    mid = _clean(em["Message-ID"]).strip()
     if mid and s.scalar(select(Message.id).where(Message.message_id == mid)):
         return None  # already recorded
     if _BOUNCER.search(str(em["From"] or "")) or em.get_content_type() == "multipart/report":
         return _bounce(s, em)
 
     # A reply: matched by its thread first, then by the sender's address.
-    sender = parseaddr(str(em["From"] or ""))[1].lower()
+    sender = parseaddr(_clean(em["From"]))[1].lower()
     refs = _ids(em["In-Reply-To"]) + _ids(em["References"])
     sent = None
     if refs:
@@ -165,8 +173,8 @@ def handle(s: Session, em: EmailMessage) -> str | None:
         at = now()
     incoming = Message(
         lead_id=lead.id, direction="in", status="received", from_addr=sender,
-        to_addr=", ".join(a for _, a in getaddresses([str(em["To"] or "")])),
-        subject=str(em["Subject"] or ""), body=text[:5000], message_id=mid or None,
+        to_addr=", ".join(a for _, a in getaddresses([_clean(em["To"])])),
+        subject=_clean(em["Subject"]), body=text[:5000], message_id=mid or None,
         in_reply_to=sent.message_id, sent_at=at,
     )  # fmt: skip
     s.add(incoming)

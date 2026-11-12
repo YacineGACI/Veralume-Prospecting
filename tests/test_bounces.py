@@ -140,3 +140,55 @@ def test_the_campaign_shows_bounced_leads_and_never_resends_to_the_dead_address(
     assert dead.status_code == 409 and "no other" in dead.json()["detail"]
     retry = client.post(f"{url}/{ids[1]}/email").json()["message"]
     assert retry["to"] == "claire@studio1.fr" and retry["status"] == "queued"
+
+
+def test_bounce_ignores_html_and_binary_attachment_message_ids(db):
+    _, ids, msgs = _campaign_sent(db, n=2)
+    with db() as s:
+        real = s.get(Message, msgs[ids[0]]["id"])
+        other = s.get(Message, msgs[ids[1]]["id"])
+        em = email.message_from_string(
+            GMAIL.format(to=real.to_addr, mid=real.message_id), policy=default
+        )
+        html = inbox.EmailMessage()
+        html.set_content("<html><body>Delivery failed</body></html>", subtype="html")
+        em.attach(html)
+        image = inbox.EmailMessage()
+        image.set_content(b"PNG<\x00\x00IDAT>" + other.message_id.encode(),
+                          maintype="image", subtype="png", cte="base64")
+        em.attach(image)
+        # Exercise MIME parsing, including decoded inline image bytes.
+        parsed = email.message_from_bytes(em.as_bytes(), policy=default)
+        assert inbox.handle(s, parsed) == "bounce"
+        s.commit()
+        assert real.status == "failed"
+        assert other.status == "sent"
+        assert not s.get(Lead, ids[1]).emails[0].get("bounced")
+
+
+def test_message_id_extraction_rejects_html_and_control_bytes():
+    assert inbox._ids(
+        '<html><table cellpadding="0"><\x00IDAT><bad\x00@id> '
+        '<valid@example.com>\r\n <another@example.org>'
+    ) == ["<valid@example.com>", "<another@example.org>"]
+
+
+def test_incoming_reply_removes_nul_before_queries_and_storage(db):
+    _, ids, msgs = _campaign_sent(db, n=1)
+    with db() as s:
+        sent = s.get(Message, msgs[ids[0]]["id"])
+        em = inbox.EmailMessage()
+        em["Message-ID"] = "<incoming\x00@example.com>"
+        em["From"] = sent.to_addr
+        em["To"] = "me\x00@example.com"
+        em["In-Reply-To"] = sent.message_id
+        em["Subject"] = "Re: bon\x00jour"
+        em.set_content("Bonjour\x00, merci !")
+        assert inbox.handle(s, em) == "reply"
+        s.commit()
+        incoming = s.scalar(select(Message).where(Message.direction == "in"))
+        assert incoming.message_id == "<incoming@example.com>"
+        assert incoming.subject == "Re: bonjour"
+        assert incoming.to_addr == "me@example.com"
+        assert incoming.body == "Bonjour, merci !"
+        assert inbox.handle(s, em) is None
