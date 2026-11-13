@@ -1,11 +1,11 @@
 // One started campaign, in four tabs: Overview (the journey, what's coming, replies),
 // Leads (filter, act on one or many), Emails & automations (the sequence, its texts and
 // delays, a live preview) and Settings (everything else). Drafts keep the builder.
-import { $, api, busy, changed, confetti, COUNTRY, esc, fail, flag, I, KINDS_PL, LANG, small, STATUS as LEAD_STATUS, toast, when } from "./core.js";
+import { $, api, busy, changed, closeModal, confetti, COUNTRY, esc, fail, flag, I, KINDS_PL, LANG, openModal, small, STATUS as LEAD_STATUS, toast, when } from "./core.js";
 import { openLead } from "./lead.js";
 import {
   activeFilters, addLeads, closeDays, coveredLangs, editClose, editFollowup, editTranslations, FU, fuDays, fuMissing, fuOf, fuOn, fuText,
-  langList, LET, pct, pickWinner, plural, sendFrom, setFuText, STATE, statusPill, TO_SEND, VCOL, vLangs, written,
+  langList, LET, mainLang, pct, pickWinner, plural, sendFrom, setFuText, STATE, statusPill, TO_SEND, VCOL, vLangs, written,
 } from "./campaigns.js";
 
 const C = () => $("#canvas");
@@ -116,32 +116,88 @@ function overview(c) {
   const feed = `<section class="card cx-card cx-grow1"><div class="row"><h2 class="cx-h2">Replies</h2><span class="pill">${t.replied + t.stopped}</span></div>
     ${replies.length ? `<div class="cx-feed">${replies.map((l) => `<button class="cx-reply" data-open="${l.id}"><span class="row" style="gap:8px"><b>${esc(l.person || l.name)}</b><span class="cx-st ${GROUP[l.state] || ""}">${esc(STATE[l.state]?.[0] || l.state)}</span><span class="grow"></span><span class="small muted">${esc(when(l.reply_at))}</span></span><span class="small muted cx-q">“${esc(l.reply)}”</span></button>`).join("")}</div>`
       : `<div class="cx-empty">${small(I.mail, 28)}<b>No replies yet</b><span class="small muted">Replies land here as they arrive; the inbox is read every 5 minutes. Open one to answer it or start their free test.</span></div>`}</section>`;
-  return `${journey}${kpis}<div class="cx-cols">${coming}${feed}</div>${abTest(c)}<div class="cx-cols">${emailCard(c)}${reach(c)}</div>`;
+  return `${journey}${kpis}${versionsCard(c)}<div class="cx-cols">${coming}${feed}</div>${reach(c)}`;
 }
 
-function abTest(c) {
-  const r = c.results, t = r.totals, test = r.test;
-  if (r.versions.length < 2) return "";
+/** The email versions side by side: what each says and shows, how each does, and the A/B
+ * verdict (a single version shows the same card, with how to test a second one). */
+function versionsCard(c) {
+  const r = c.results, t = r.totals, test = r.test, many = r.versions.length > 1;
   const live = c.status === "running" || c.status === "paused";
-  const v = (x, i) => {
-    const tv = test?.versions.find((y) => y.template_id === x.template_id), won = test?.winner_id === x.template_id, lead = test && test.leader === x.letter && t.sent;
-    return `<div class="cx-v ${won || lead ? "lead" : ""}" style="--vc:${VCOL[i]}"><div class="row"><span class="vl" style="background:${VCOL[i]}">${x.letter}</span><b style="flex:1;min-width:0" class="cx-ell">“${esc(x.subject)}”</b>${won ? `<span class="pill st-customer">Winner</span>` : lead ? `<span class="pill st-pilot">Ahead</span>` : ""}</div>
-      <div class="cx-mini"><div><b>${x.sent}</b><span>sent</span></div><div><b>${x.replied}</b><span>replied</span></div><div><b style="color:var(--vc)">${x.sent ? pct((test?.metric === "interested" ? x.interested : x.replied) / x.sent) : "–"}</b><span>rate</span></div>${tv?.sent ? `<div><b>${pct(tv.chance_best)}</b><span>chance best</span></div>` : ""}</div></div>`;
+  const metric = test?.metric === "interested" ? "interest" : "reply";
+  const card = (v, i) => {
+    const tv = test?.versions.find((x) => x.template_id === v.template_id);
+    const won = test?.winner_id === v.template_id, ahead = test && test.leader === v.letter && t.sent;
+    const cv = c.versions.find((x) => x.id === v.template_id), ls = cv ? vLangs(cv).filter((l) => written(cv, l)) : [];
+    const rate = v.sent ? (metric === "interest" ? v.interested : v.replied) / v.sent : null;
+    return `<article class="cr-v ${many && (won || ahead) ? "lead" : ""}" style="--vc:${VCOL[i]}">
+      <div class="row"><span class="vl" style="background:${VCOL[i]}">${v.letter}</span><div style="flex:1;min-width:0"><b class="cx-ell">${esc(v.name && v.name !== v.letter ? v.name : `Version ${v.letter}`)}</b><span class="small muted cx-ell">“${esc(v.subject)}”</span></div>
+        ${won ? `<span class="pill st-customer">Winner</span>` : many && ahead ? `<span class="pill st-pilot">Ahead</span>` : ""}</div>
+      ${v.asset_ids.length ? `<div class="cr-imgs">${v.asset_ids.map((id) => `<img src="/api/assets/${id}/thumb" alt="">`).join("")}</div>` : `<span class="small muted">No images</span>`}
+      <div class="row small muted" style="gap:8px"><span style="flex:1;min-width:0" class="cx-ell">In ${esc(ls.length > 3 ? `${langList(ls.slice(0, 3))} and ${ls.length - 3} more` : langList(ls))}</span>${cv ? `<button class="btn sm" data-tr-edit="${cv.id}">Languages</button>` : ""}<button class="btn sm ghost" data-version-leads="${v.letter}">Its leads</button></div>
+      <div class="cr-nums"><div><b>${v.sent}</b><span>sent</span></div><div><b>${v.replied}</b><span>replied</span></div><div><b>${v.interested}</b><span>interested</span></div><div><b style="color:var(--vc)">${pct(rate)}</b><span>${metric} rate</span></div></div>
+      ${tv && tv.sent ? `<div class="cr-bar"><span class="small muted">Likely ${metric} rate: ${pct(tv.low)} to ${pct(tv.high)}</span><div class="rng"><span style="left:${tv.low * 100}%;width:${Math.max(1, (tv.high - tv.low) * 100)}%"></span><i style="left:${(tv.rate || 0) * 100}%"></i></div></div>
+        <div class="cr-bar"><span class="small muted">Chance of being the best: ${pct(tv.chance_best)}</span><div class="pb"><span style="width:${tv.chance_best * 100}%"></span></div></div>` : ""}
+      <p class="small muted" style="margin:0">${plural(v.planned, "lead")} get this version · ${v.planned - v.sent > 0 ? `${v.planned - v.sent} still to send` : "all sent"}</p>
+    </article>`;
   };
-  return `<section class="card cx-card"><div class="row"><h2 class="cx-h2">A/B test</h2><span class="small muted">counted on ${test?.metric === "interested" ? "interested leads" : "replies"}</span></div>
-    ${test?.suggest ? `<div class="cx-banner ok"><span><b>Version ${esc(test.suggest.letter)} is clearly better.</b> ${esc(test.verdict.text)}</span><button class="btn primary sm" data-winner="${test.suggest.template_id}" data-letter="${esc(test.suggest.letter)}" data-unsent="${test.suggest.unsent}">Send ${esc(test.suggest.letter)} to the ${test.suggest.unsent} left</button></div>`
-      : `<p class="small muted" style="margin:0">${esc(test?.verdict.text || "")} ${live && t.sent >= 10 && test?.status !== "stopped" ? `<button class="btn sm" data-pick>Pick a winner myself</button>` : ""}</p>`}
-    <div class="cx-vs">${r.versions.map(v).join("")}</div></section>`;
+  const left = r.versions.reduce((n, v) => n + Math.max(0, v.planned - v.sent), 0);
+  const canAdd = live && r.versions.length < 4 && test?.status !== "stopped";
+  const verdict = !many ? (canAdd
+    ? `<div class="cr-verdict"><span>One version, so there's nothing to compare yet. Add a version B with another subject, text or images: the ${plural(left, "lead")} not emailed yet are shared out between A and B, and the app tells you which works better.</span><button class="btn primary sm" data-new-ver>+ Add a version B</button></div>`
+    : `<div class="cr-verdict"><span>One version, so there's nothing to compare yet. To test another subject, text or images, duplicate this campaign and add a version B in its builder.</span><button class="btn sm" data-dup>Duplicate to test a version B</button></div>`)
+    : test?.suggest ? `<div class="cr-verdict win"><span><b>Version ${esc(test.suggest.letter)} is clearly better.</b> ${esc(test.verdict.text)} ${plural(test.suggest.unsent, "lead")} haven't had their email yet.</span><button class="btn primary sm" data-winner="${test.suggest.template_id}" data-letter="${esc(test.suggest.letter)}" data-unsent="${test.suggest.unsent}">Send ${esc(test.suggest.letter)} to the ${test.suggest.unsent} left</button></div>`
+    : test?.status === "stopped" ? `<div class="cr-verdict">${small(I.check)} <span>Test ended: ${esc(r.versions.find((x) => x.template_id === test.winner_id)?.letter || "?")} won, and the leads left get it.</span></div>`
+    : `<div class="cr-verdict ${test?.verdict.state || ""}"><span>${esc(test?.verdict.text || "Nothing sent yet.")}</span>${live && t.sent >= 10 ? `<button class="btn sm" data-pick>Pick a winner myself</button>` : ""}</div>`;
+  return `<section class="card cx-card"><div class="row"><h2 class="cx-h2">${many ? `A/B test · ${r.versions.length} versions` : "Email versions"}</h2><span class="small muted">${many ? `counted on ${test?.metric === "interested" ? "interested leads" : "replies"} · leads shared out equally` : "the first email each lead gets"}</span>${many && canAdd ? `<span class="grow"></span><button class="btn sm" data-new-ver>+ Version ${LET[r.versions.length]}</button>` : ""}</div>
+    ${verdict}
+    <div class="cr-vs ${many ? "" : "one"}">${r.versions.map(card).join("")}</div>
+    ${many ? `<p class="small muted" style="margin:0">“Likely rate” is where each version's true rate probably lies given how few emails have gone out; the ranges narrow as more go. The verdict waits until each version has about 20 emails.</p>` : ""}</section>`;
 }
 
-function emailCard(c) {
-  const r = c.results;
-  return `<section class="card cx-card cx-grow1"><div class="row"><h2 class="cx-h2">${r.versions.length > 1 ? "The emails" : "The email"}</h2><span class="grow"></span><button class="btn ghost sm" data-tab="emails">See the sequence</button></div>
-    ${r.versions.map((v) => { const cv = c.versions.find((x) => x.id === v.template_id); const ls = cv ? vLangs(cv).filter((l) => written(cv, l)) : [];
-      return `<div class="cx-email">${v.asset_ids.length ? `<div class="cx-thumbs">${v.asset_ids.slice(0, 3).map((id) => `<img src="/api/assets/${id}/thumb" alt="">`).join("")}</div>` : ""}
-        <div style="min-width:0;flex:1"><b class="cx-ell">“${esc(v.subject)}”</b><div class="small muted">${v.asset_ids.length ? `${plural(v.asset_ids.length, "image")} · ` : ""}in ${esc(ls.length > 3 ? `${langList(ls.slice(0, 3))} +${ls.length - 3}` : langList(ls))}</div>
-        <div class="row small" style="gap:14px;margin-top:4px"><span><b class="mono">${v.sent}</b> sent</span><span><b class="mono">${v.replied}</b> replied</span><span><b class="mono">${v.sent ? pct(v.replied / v.sent) : "–"}</b> reply rate</span></div></div></div>`; }).join("")}
-    ${r.versions.length === 1 ? `<p class="small muted" style="margin:0">To compare another subject or other images, duplicate the campaign and add a version B.</p>` : ""}</section>`;
+/** A new version for a started campaign: starts as a copy of one, then change one thing. */
+async function newVersion(c) {
+  const ds = (await api("/api/dossiers")).items || [];
+  const letter = LET[c.versions.length];
+  let src = c.versions[0];
+  const v = { name: "", subject: src.subject, body: src.body, asset_ids: [...src.asset_ids], attach_photo: src.attach_photo };
+  const thumbs = () => ds.filter((d) => d.images.length).map((d) => `<div class="cb-dos"><span class="small muted">${esc(d.name)}</span><div class="cb-thumbs">${d.images.map((x) => `<button type="button" class="cb-th" data-nv-img="${x.id}" aria-pressed="${v.asset_ids.includes(x.id)}" title="${esc(x.name)}"><img src="${x.thumb}" alt="${esc(x.name)}" loading="lazy"><span class="ck">${v.asset_ids.includes(x.id) ? small(I.check, 12) : ""}</span></button>`).join("")}</div></div>`).join("")
+    || `<p class="small muted" style="margin:0">No images yet. <a href="#dossiers">Add before/after photos to a dossier</a>.</p>`;
+  const sheet = openModal(`<div class="sheet-h"><h2>New version ${letter}</h2><button class="btn ghost sm" data-close aria-label="Close">${small(I.x)}</button></div>
+    <form class="sheet-b">
+      ${c.versions.length > 1 ? `<label class="small muted tl-f">Start from<select class="input" name="from">${c.versions.map((x, i) => `<option value="${i}">Version ${LET[i]}${x.name && x.name !== LET[i] ? ` · ${esc(x.name)}` : ""}</option>`).join("")}</select></label>` : `<p class="small muted" style="margin:0">Starts as a copy of version A. Change one thing (the subject, the text or the images) to learn what works.</p>`}
+      <label class="small muted tl-f">Short name, for the results<input class="input" name="vname" placeholder="e.g. Free test in the subject"></label>
+      <label class="small muted tl-f">Subject in ${esc(LANG[mainLang(src)])}<input class="input" name="subject" value="${esc(v.subject)}"></label>
+      <label class="small muted tl-f">Email in ${esc(LANG[mainLang(src)])}<textarea class="input mailbody" rows="12" name="body">${esc(v.body)}</textarea></label>
+      <div class="cb-imgs"><div class="row"><h4 style="margin:0">Images</h4><span class="small muted" data-nv-n>${plural(v.asset_ids.length, "image")}</span></div><div data-nv-thumbs>${thumbs()}</div></div>
+      <p class="small muted" style="margin:0">The leads not emailed yet are shared out again, equally, between every version. Emails already sent don't change, and the comparison counts from now. Version ${letter} goes only to leads who speak ${esc(LANG[mainLang(src)])}; add other languages afterwards with its Languages button.</p>
+      <div class="row"><span class="grow"></span><button class="btn" type="button" data-close>Cancel</button><button class="btn primary">Add version ${letter}</button></div></form>`);
+  const f = $("form", sheet);
+  const redraw = () => { $("[data-nv-thumbs]", sheet).innerHTML = thumbs(); $("[data-nv-n]", sheet).textContent = plural(v.asset_ids.length, "image"); };
+  sheet.onchange = (e) => {
+    if (e.target.name !== "from") return;
+    src = c.versions[+e.target.value];
+    Object.assign(v, { asset_ids: [...src.asset_ids], attach_photo: src.attach_photo });
+    f.subject.value = src.subject; f.body.value = src.body; redraw();
+  };
+  sheet.onclick = (e) => {
+    if (e.target.closest("[data-close]")) return closeModal();
+    const b = e.target.closest("[data-nv-img]");
+    if (!b) return;
+    const id = +b.dataset.nvImg;
+    v.asset_ids = v.asset_ids.includes(id) ? v.asset_ids.filter((x) => x !== id) : [...v.asset_ids, id];
+    redraw();
+  };
+  sheet.onsubmit = async (e) => {
+    e.preventDefault();
+    if (!f.subject.value.trim() || !f.body.value.trim()) return toast("The version needs a subject and a text.", { err: true });
+    await busy(f.querySelector(".primary"), async () => {
+      const r = await api(`/api/campaigns/${c.id}/versions`, { method: "POST", body: { name: f.vname.value.trim() || letter, subject: f.subject.value, body: f.body.value, asset_ids: v.asset_ids, attach_photo: v.attach_photo, language: mainLang(src), translations: {} } });
+      closeModal();
+      toast(`Version ${letter} added: ${plural(r.leads, "lead")} will get it.`);
+      changed();
+    });
+  };
 }
 
 function reach(c) {
@@ -252,7 +308,8 @@ function pane(c) {
     <div class="cx-mail"><div class="cx-mail-h small muted" data-pv-h>…</div><div class="cx-mail-b" data-pv-b></div><div class="cx-thumbs" data-pv-img></div></div></div>`;
   if (P.step === 0) {
     return `${c.versions.map((v, i) => `<div class="card cx-card"><div class="row"><h2 class="cx-h2" style="flex:1">First email${c.versions.length > 1 ? ` · version ${esc(LET[i])}` : ""}</h2><button class="btn sm" data-tr-edit="${v.id}">Languages (${vLangs(v).filter((l) => written(v, l)).length})</button></div>
-        <p class="small muted" style="margin:0">Fixed once the campaign has started, so everyone gets the same email. Languages can still be added. To try another text, duplicate the campaign.</p>
+        ${(() => { const rv = c.results.versions[i]; return rv ? `<div class="row small" style="gap:14px"><span><b class="mono">${rv.sent}</b> sent</span><span><b class="mono">${rv.replied}</b> replied</span><span><b class="mono">${rv.interested}</b> interested</span><span><b class="mono">${rv.sent ? pct(rv.replied / rv.sent) : "–"}</b> reply rate</span><span class="muted">${plural(rv.planned, "lead")} get it</span></div>` : ""; })()}
+        <p class="small muted" style="margin:0">Fixed once the campaign has started, so the comparison stays fair. Languages can still be added. To try another text, duplicate the campaign.</p>
         <div class="cx-ro"><b>${esc(v.subject)}</b>\n\n${esc(v.body)}</div>
         ${v.asset_ids.length ? `<div class="cx-thumbs">${v.asset_ids.map((id) => `<img src="/api/assets/${id}/thumb" alt="">`).join("")}</div>` : ""}</div>`).join("")}${pv}`;
   }
@@ -353,6 +410,7 @@ function wire(c, toSend) {
     try {
       if (d.tab) { P.tab = d.tab; renderCampaign(c); window.scrollTo?.(0, 0); }
       else if (d.goto) { P.tab = "leads"; P.stage = d.goto; renderCampaign(c); }
+      else if (d.versionLeads) { Object.assign(P, { tab: "leads", stage: "all", version: d.versionLeads }); renderCampaign(c); }
       else if (d.sendNext !== undefined) await sendFrom(c, toSend, 0);
       else if (d.sendLead) { e.stopPropagation(); await sendFrom(c, toSend, Math.max(0, toSend.indexOf(+d.sendLead))); }
       else if (d.add !== undefined) addLeads(c);
@@ -360,6 +418,7 @@ function wire(c, toSend) {
       else if (d.editFu) editFollowup(c, +d.editFu);
       else if (d.editClose !== undefined) editClose(c);
       else if (d.trEdit) editTranslations(c, +d.trEdit);
+      else if (d.newVer !== undefined) await newVersion(c);
       else if (d.pick !== undefined) pickWinner(c);
       else if (d.winner) {
         if (d.confirm !== "1") { d.confirm = "1"; b.textContent = `Confirm: everyone left gets ${d.letter}`; return; }

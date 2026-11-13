@@ -516,6 +516,56 @@ def prepare_running(s: Session) -> int:
     return n
 
 
+def add_version(s: Session, c: Campaign, name: str, subject: str, body: str, asset_ids: list[int],
+                attach_photo: bool, language: str = "fr",
+                translations: dict[str, dict[str, str]] | None = None) -> tuple[Template, int]:  # fmt: skip
+    """A new version in a started campaign: the leads not emailed yet are shared out again
+    between all its versions (those speaking one of its languages). Their unsent first
+    emails are dropped and written again. Emails already sent stay as they were. With one
+    version so far, this starts the campaign's A/B test, counted from now so both versions
+    are compared over the same days. Returns the version and how many leads it gets."""
+    if c.status not in ("running", "paused"):
+        raise CampaignError("Only a running or paused campaign takes a new version.")
+    tpls = versions(s, c)
+    if len(tpls) >= MAX_VERSIONS:
+        raise CampaignError(f"A campaign has at most {MAX_VERSIONS} versions.")
+    exp = s.get(Experiment, c.experiment_id) if c.experiment_id else None
+    if exp and exp.status == "stopped":
+        raise CampaignError("This campaign's test has ended. Duplicate the campaign to test again.")
+    if not subject.strip() or not body.strip():
+        raise CampaignError("The new version needs a subject and a text.")
+    t = new_version(s, c, name, subject, body, asset_ids, attach_photo, language, translations)
+    if exp is None:
+        exp = Experiment(name=c.name, kind=c.kind, template_ids=[x.id for x in tpls] + [t.id],
+                         metric=c.metric or "reply", status="running", campaign_id=c.id)  # fmt: skip
+        s.add(exp)
+        s.flush()
+        c.experiment_id = exp.id
+    else:
+        exp.template_ids = [*exp.template_ids, t.id]
+    every = [*tpls, t]
+    written = _written(s, c)
+    rows, unsent = [], []
+    for row in s.scalars(select(CampaignLead).where(CampaignLead.campaign_id == c.id).order_by(CampaignLead.rank)):
+        m = written.get(row.lead_id)
+        if m is not None and m.status not in ("queued", "approved"):
+            continue  # sent, or failed: theirs is decided
+        lead = s.get(Lead, row.lead_id)
+        if lead is None or mailer.text_in(t, languages.of_lead(lead)) is None:
+            continue  # the new version isn't in their language: they keep theirs
+        rows.append(row)
+        if m is not None:
+            unsent.append(m)
+    for m in unsent:
+        m.status, m.error = "cancelled", f"new version {t.name} added: dealt again"
+    got = 0
+    for row, v in zip(rows, _deal(len(rows), len(every), seed=c.id + t.id)):
+        row.template_id = every[v].id
+        got += every[v].id == t.id
+    s.flush()
+    return t, got
+
+
 def pick_winner(s: Session, c: Campaign, template_id: int) -> int:
     """End the test: everyone not emailed yet gets the winner. Returns how many."""
     tpls = {t.id: t for t in versions(s, c)}

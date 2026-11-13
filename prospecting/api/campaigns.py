@@ -559,6 +559,22 @@ def winner(campaign_id: int, b: WinnerIn) -> dict[str, Any]:
         return {"moved": moved}
 
 
+@router.post("/campaigns/{campaign_id}/versions")
+def add_version(campaign_id: int, v: VersionIn) -> dict[str, Any]:
+    """A new version in a started campaign, for the leads not emailed yet."""
+    if v.language not in LANGUAGES:
+        raise HTTPException(422, "Unknown language")
+    with session() as s:
+        c = _get(s, campaign_id)
+        try:
+            t, got = C.add_version(s, c, v.name, v.subject, v.body, v.asset_ids, v.attach_photo,
+                                   v.language, v.translations)  # fmt: skip
+        except C.CampaignError as e:
+            raise HTTPException(409, str(e)) from e
+        s.commit()
+        return {"id": t.id, "leads": got}
+
+
 class MoreIn(BaseModel):
     n: int
 

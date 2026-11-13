@@ -158,3 +158,40 @@ def test_export_preview_settings_archive_and_delete(db):
         assert not list(s.scalars(select(Message).where(Message.campaign_id == cid, Message.status == "approved")))
         assert s.scalar(select(Message.id).where(Message.lead_id == fr[0], Message.status == "sent"))
         assert s.get(Lead, fr[0]) is not None
+
+
+def test_add_a_version_to_a_running_campaign(db):
+    cid, fr, de = _sent(db, days_ago=2, n_fr=2, n_de=1)
+    extra = leads(db, 8, city="Colmar", postcode="68000")
+    extra_de = leads(db, 1, country="DE", language="de", city="München", postcode="80331")
+    client.post(f"/api/campaigns/{cid}/leads", json={"lead_ids": extra + extra_de})
+    queued = client.post(f"/api/campaigns/{cid}/leads/{extra[0]}/email").json()["message"]["id"]
+    B = {"name": "Free test", "subject": "Vos photos retouchées gratuitement ?", "body": "Bonjour {prenom}, B.\n{signature}"}
+    r = client.post(f"/api/campaigns/{cid}/versions", json=B)
+    assert r.status_code == 200, r.text
+    b_id, got = r.json()["id"], r.json()["leads"]
+    with db() as s:
+        rows = {x.lead_id: x.template_id for x in s.scalars(select(CampaignLead).where(CampaignLead.campaign_id == cid))}
+        a_id = rows[fr[0]]
+        assert all(rows[l] == a_id for l in fr + de)  # already emailed: unchanged
+        assert rows[extra_de[0]] == a_id  # B isn't in German
+        assert sum(rows[l] == b_id for l in extra) == got == 4  # half of the 8 French ones
+        assert s.get(Message, queued).status == "cancelled"  # dealt again, written again
+    c = client.get(f"/api/campaigns/{cid}").json()
+    assert len(c["versions"]) == 2 and len(c["results"]["versions"]) == 2
+    test = c["results"]["test"]
+    assert test and all(v["sent"] == 0 for v in test["versions"])  # compared from now on
+    assert client.post(f"/api/campaigns/{cid}/versions", json={**B, "subject": " "}).status_code == 409
+    # Up to 4 versions.
+    for _ in range(2):
+        assert client.post(f"/api/campaigns/{cid}/versions", json=B).status_code == 200
+    assert "at most" in client.post(f"/api/campaigns/{cid}/versions", json=B).json()["detail"]
+
+
+def test_no_new_version_once_the_test_has_ended(db):
+    cid, _, _ = _sent(db, days_ago=2, n_fr=2, n_de=0)
+    B = {"name": "B", "subject": "Un test ?", "body": "Bonjour {prenom}, B.\n{signature}"}
+    b_id = client.post(f"/api/campaigns/{cid}/versions", json=B).json()["id"]
+    assert client.post(f"/api/campaigns/{cid}/winner", json={"template_id": b_id}).status_code == 200
+    r = client.post(f"/api/campaigns/{cid}/versions", json=B)
+    assert r.status_code == 409 and "ended" in r.json()["detail"]
