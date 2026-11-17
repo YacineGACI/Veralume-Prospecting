@@ -195,3 +195,29 @@ def test_no_new_version_once_the_test_has_ended(db):
     assert client.post(f"/api/campaigns/{cid}/winner", json={"template_id": b_id}).status_code == 200
     r = client.post(f"/api/campaigns/{cid}/versions", json=B)
     assert r.status_code == 409 and "ended" in r.json()["detail"]
+
+
+def test_leave_out_leads_from_other_campaigns(db):
+    ids = leads(db, 6)
+    draft(included=[ids[0]])  # a draft holding one lead by hand
+    second = draft(size=2)
+    client.put(f"/api/campaigns/{second['id']}", json={"versions": [{"name": "A", "subject": "Un test ?", "body": "Bonjour {prenom}.\n{signature}"}]})
+    assert client.post(f"/api/campaigns/{second['id']}/start").status_code == 200
+    client.post(f"/api/campaigns/{second['id']}/status", json={"status": "archived"})  # never emailed
+    with db() as s:
+        in_second = set(s.scalars(select(CampaignLead.lead_id).where(CampaignLead.campaign_id == second["id"])))
+    assert len(in_second) == 2 and ids[0] not in in_second  # new campaigns skip other campaigns' leads
+
+    def who(filters):
+        r = client.post("/api/campaigns/audience", json={"kind": "photographer", "size": 50, "filters": filters}).json()
+        return {l["id"] for l in r["preview"]}, r["facets"]
+
+    third = draft()
+    assert third["filters"] == {"not_in_any": True}
+    got, fa = who(third["filters"])
+    assert got == set(ids) - {ids[0]} - in_second and fa["in_no_campaign"] == len(got)
+    got, fa = who({})  # off: archived and draft campaigns' leads come back
+    assert got == set(ids)
+    assert {x["id"]: x["n"] for x in fa["campaigns"]}[second["id"]] == 2
+    got, _ = who({"not_in": [str(second["id"])]})  # only one campaign left out
+    assert got == set(ids) - in_second

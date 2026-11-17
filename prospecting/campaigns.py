@@ -77,6 +77,27 @@ def _busy_elsewhere(s: Session, campaign_id: int | None) -> set[int]:
     return set(s.scalars(q))
 
 
+def _in_campaigns(s: Session, campaign_id: int | None) -> dict[int, set[int]]:
+    """lead id → the other campaigns it's in, whatever their status: started ones (their
+    list of leads) and drafts (the leads added to them by hand)."""
+    out: dict[int, set[int]] = {}
+    q = select(CampaignLead.lead_id, CampaignLead.campaign_id)
+    if campaign_id:
+        q = q.where(CampaignLead.campaign_id != campaign_id)
+    for lid, cid in s.execute(q):
+        out.setdefault(lid, set()).add(cid)
+    for c in s.scalars(select(Campaign).where(Campaign.status == "draft")):
+        if c.id != campaign_id:
+            for lid in c.included or []:
+                out.setdefault(lid, set()).add(c.id)
+    return out
+
+
+def _not_in(f: dict[str, Any]) -> set[int]:
+    """The campaigns whose leads the filters leave out (`not_in`, by id)."""
+    return {int(x) for x in f.get("not_in") or [] if str(x).isdigit()}
+
+
 def _started(s: Session) -> set[int]:
     """Leads who already have a first email written or sent."""
     return set(s.scalars(
@@ -104,10 +125,14 @@ def why_not(s: Session, lead: Lead, campaign_id: int | None = None,
     return None
 
 
-def facets(s: Session, leads: list[Lead]) -> dict[str, Any]:
+def facets(s: Session, leads: list[Lead], campaign_id: int | None = None) -> dict[str, Any]:
     """How many of these leads have each trait: shown beside each filter, so you see what
     a filter would leave before clicking it."""
     se, sp = shared_contacts()
+    inside = _in_campaigns(s, campaign_id)
+    per = Counter(cid for l in leads for cid in inside.get(l.id, ()))
+    camps = [{"id": c.id, "name": c.name, "status": c.status, "n": per.get(c.id, 0)}
+             for c in s.scalars(select(Campaign).where(Campaign.id != (campaign_id or 0)).order_by(Campaign.id.desc()))]  # fmt: skip
     tags = Counter(t for l in leads for t in set(l.tags or []) if t in SPECIALTIES)
     soc = Counter(k for l in leads for k in SOCIALS if (l.socials or {}).get(k))
     nets = Counter(l.network for l in leads if l.network)
@@ -132,6 +157,9 @@ def facets(s: Session, leads: list[Lead]) -> dict[str, Any]:
         "labels": dict(Counter(x for l in leads for x in set(l.labels or []))),
         "countries": dict(Counter(l.country or "FR" for l in leads)),
         "languages": dict(Counter(l.language or "fr" for l in leads)),
+        # Leads in no other campaign, and how many of these leads each other campaign has.
+        "in_no_campaign": sum(1 for l in leads if l.id not in inside),
+        "campaigns": camps,
     }  # fmt: skip
 
 
@@ -238,10 +266,16 @@ def candidates(
         q = q.where(Lead.score >= int(f["score_min"]))
     started = _started(s)
     busy = _busy_elsewhere(s, campaign_id)
+    inside = _in_campaigns(s, campaign_id) if f.get("not_in_any") or f.get("not_in") else {}
+    avoid = _not_in(f)
     se, sp = shared_contacts()
     out = []
     for lead in s.scalars(q):
         if lead.id in started or lead.id in busy or not usable_emails(lead, se):
+            continue
+        if f.get("not_in_any") and lead.id in inside:
+            continue
+        if avoid & inside.get(lead.id, set()):
             continue
         if not _matches(lead, f, se, sp):
             continue

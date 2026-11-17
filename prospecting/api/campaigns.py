@@ -147,7 +147,7 @@ def audience(b: AudienceIn) -> dict[str, Any]:
             "preview": [{**_row(l), "by_hand": l.id in hand_ids} for l in chosen[: max(1, b.shown)]],
             "excluded": [summary(l) for l in every if l.id in gone][:50],
             "blocked": [{**summary(l), "why": why} for l, why in blocked],
-            "deps": deps, "facets": C.facets(s, every),
+            "deps": deps, "facets": C.facets(s, every, b.campaign_id),
             # Every lead the filters let in, by language, and those whose language no
             # text covers yet (left out until it's written).
             "by_language": dict(Counter(lang_of.values()).most_common()),
@@ -397,7 +397,7 @@ def _apply(s, c: Campaign, b: CampaignIn) -> None:
 @router.post("/campaigns")
 def create(b: CampaignIn) -> dict[str, Any]:
     with session() as s:
-        c = Campaign(name="New campaign", kind=b.kind or "photographer", filters={}, size=50,
+        c = Campaign(name="New campaign", kind=b.kind or "photographer", filters={"not_in_any": True}, size=50,
                      lead_order="small", excluded=[], daily_cap=min(20, settings.daily_send_cap),
                      review="daily", metric="reply", followups_on=True, status="draft")  # fmt: skip
         s.add(c)

@@ -260,7 +260,10 @@ function drawStep() {
 const NAMES = {
   first_name: "first name known", email_personal: "a person's email", phone: "a phone to call",
   small: "small or new", solo: "works alone", measured: "photos measured", shortlisted: "shortlisted by you",
+  not_in_any: "in no other campaign",
 };
+/** Campaign names by id, for the "not in …" filter chips (from the audience facets). */
+export const CAMPS = {};
 const n0 = (n) => (n == null ? "" : ` <span class="fn">${Number(n).toLocaleString("en")}</span>`);
 const PRESETS = {
   photographer: [
@@ -298,6 +301,7 @@ export function activeFilters(f) {
   (f.tags_none || []).forEach((t) => out.push([`not ${tagName(t)}`, "tags_none", t]));
   (f.labels_any || []).forEach((id) => out.push([`tagged ${LABELS.byId[id]?.name || "?"}`, "labels_any", id]));
   (f.labels_none || []).forEach((id) => out.push([`not tagged ${LABELS.byId[id]?.name || "?"}`, "labels_none", id]));
+  (f.not_in || []).forEach((id) => out.push([`not in “${CAMPS[id] || `campaign #${id}`}”`, "not_in", id]));
   (f.countries || []).forEach((c) => out.push([`in ${COUNTRY[c] || c}`, "countries", c]));
   (f.languages || []).forEach((x) => out.push([`speaks ${LANG[x] || x}`, "languages", x]));
   (f.deps || []).forEach((d) => out.push([`in ${d}`, "deps", d]));
@@ -322,6 +326,7 @@ const sub = (t) => `<span class="small muted" style="text-transform:none;letter-
 function stepWho() {
   const c = B.c, f = c.filters, a = B.aud, fa = a?.facets || {};
   (fa.tags || []).forEach((t) => (TAGS[t.tag] = t.label));
+  (fa.campaigns || []).forEach((x) => (CAMPS[x.id] = x.name));
   const opts = B.depOptions;
   const top = opts.slice(0, 6).map((x) => x.dep);
   const shownDeps = [...new Set([...top, ...(f.deps || [])])];
@@ -386,6 +391,11 @@ function stepWho() {
         const st = (f.labels_any || []).includes(x.id) ? "any" : (f.labels_none || []).includes(x.id) ? "none" : "";
         return `<button class="lab c-${esc(x.color)}" type="button" data-flab="${x.id}" aria-pressed="${!!st}">${st === "any" ? "✓ " : st === "none" ? "✕ " : "<i></i>"}${st === "none" ? "not " : ""}${esc(x.name)}${st ? "" : n0(fa.labels?.[x.id] || 0)}</button>`;
       }).join("")}</div></details>` : ""}
+
+      ${(fa.campaigns || []).length ? `<details class="fgrp" open><summary>Other campaigns ${sub("anyone already emailed is always left out")}</summary><div class="chips">
+        ${chip(NAMES.not_in_any, `data-fb="not_in_any"`, f.not_in_any, fa.in_no_campaign)}
+        ${f.not_in_any ? "" : fa.campaigns.map((x) => chip(`not in “${esc(x.name)}”${x.status === "archived" ? " (archived)" : x.status === "draft" ? " (draft)" : ""}`, `data-flist="not_in" data-fval="${x.id}"`, (f.not_in || []).includes(String(x.id)), (f.not_in || []).includes(String(x.id)) ? null : (a?.matching || 0) - x.n)).join("")}
+      </div><p class="small muted" style="margin:4px 0 0">${f.not_in_any ? "Only leads that were never in any other campaign, even one that's finished, archived or still a draft. Untick it to leave out only some campaigns." : "Leads can come from other campaigns as long as they never got an email. Tick a campaign to leave its leads out."}</p></details>` : ""}
 
       <details class="fgrp" open><summary>Their photos and score</summary><div class="chips">
         ${chip("photos measured", `data-fb="measured"`, f.measured, fa.measured)}
@@ -704,7 +714,7 @@ async function onBuilderClick(e) {
   }
   const toggleIn = (key, val) => { const s = new Set(f[key] || []); s.has(val) ? s.delete(val) : s.add(val); f[key] = s.size ? [...s] : undefined; };
   const WHO = ["kind", "dep", "order", "unexclude", "fb", "fset", "flist", "ftag", "flab", "fdel", "fclear", "preset", "hand", "unhand", "moreList", "allList"];
-  if (d.kind) { c.kind = d.kind; c.filters = {}; B.depOptions = []; c.excluded = []; }
+  if (d.kind) { c.kind = d.kind; c.filters = { not_in_any: f.not_in_any, not_in: f.not_in }; B.depOptions = []; c.excluded = []; }
   else if (d.preset) { Object.assign(f, structuredClone((PRESETS[c.kind] || [])[+d.preset][1])); }
   else if (d.fb) f[d.fb] = f[d.fb] ? undefined : true;
   else if (d.fset) { const v = isNaN(+d.fval) ? d.fval : +d.fval; f[d.fset] = String(f[d.fset] ?? "") === String(d.fval) ? undefined : v; }
